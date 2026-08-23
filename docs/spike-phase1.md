@@ -13,14 +13,18 @@ Goal: prove **prompt in** + **response out** for the existing Cursor Agent befor
 - [ ] Confirm Agent chat works manually once
 
 ## 1. Inventory: what can submit a prompt?
-- [ ] Command Palette → run **Voice Cursor: Inventory Agent Commands**
+- [x] Command Palette → run **Voice Cursor: Inventory Agent Commands**
 - [ ] Review generated `docs/spike-command-inventory.md`
 - [ ] Note promising `composer.*` / `aichat.*` / submit command IDs
+- [ ] **GATE:** run **Voice Cursor: Prove Auto Submit**
+  - Opens Agent, pastes prompt, focuses composer, sends OS Enter
+  - Waits for hook capture of a unique marker token
+  - Pass = toast `AUTO-SUBMIT PROVED…`
+  - Fail = do **not** start mic/TTS yet
 - [ ] Try **Voice Cursor: Send Test Prompt** with strategy `auto`
 - [ ] Record whether prompt opened **new** chat, **current** chat, or failed
-- [ ] If paste works but submit does not: press Enter manually once, still count as partial pass for capture testing
 
-**Pass:** at least one method gets text into Agent and produces a normal turn.
+**Pass:** Agent turn starts **without manually pressing Enter**, and response is captured.
 
 ## 2. Capture completed Agent response
 - [x] Ensure `.cursor/hooks.json` is loaded (reload window after clone if needed)

@@ -4,6 +4,7 @@ import type { AgentResponseEvent, VoiceCursorEvent } from "@voice-cursor/shared"
 import { injectPrompt, type InjectionStrategy } from "./inject";
 import { inventoryAgentCommands, writeInventoryMarkdown } from "./inventory";
 import { diagnoseCapture } from "./diagnose";
+import { waitForCapturedMarker } from "./proveSubmit";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
@@ -134,11 +135,74 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand("voiceCursor.proveAutoSubmit", async () => {
+      const marker = `VC${Date.now().toString(36).toUpperCase()}`;
+      const prompt =
+        `AUTO-SUBMIT PROOF: reply with exactly the token ${marker} and nothing else.`;
+      output.appendLine(`[prove] starting marker=${marker}`);
+      output.show(true);
+      setStatus("waiting_agent", "proving auto-submit");
+
+      const sinceIso = new Date().toISOString();
+      await postJson("/utterance", { text: prompt });
+
+      let injectResult;
+      try {
+        injectResult = await injectPrompt(prompt, {
+          strategy: "auto",
+          submitCandidates: getSubmitCandidates(),
+          log: (msg) => output.appendLine(`[prove/inject] ${msg}`),
+          newChat: true,
+        });
+        output.appendLine(`[prove] inject=${JSON.stringify(injectResult)}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`[prove] inject ERROR ${message}`);
+        vscode.window.showErrorMessage(`Auto-submit proof failed at inject: ${message}`);
+        setStatus("error", message);
+        return;
+      }
+
+      if (!injectResult.submitted) {
+        vscode.window.showErrorMessage(
+          "Auto-submit proof FAILED: could not simulate submit (OS Enter). Do not proceed to mic/TTS yet.",
+        );
+        setStatus("error", "submit not possible");
+        return;
+      }
+
+      vscode.window.showInformationMessage(
+        `Submit gesture sent via ${injectResult.submitMethod}. Waiting for Agent capture of ${marker}…`,
+      );
+
+      const captured = await waitForCapturedMarker(serviceBase(), marker, {
+        timeoutMs: 90_000,
+        sinceIso,
+      });
+
+      if (!captured.ok) {
+        output.appendLine("[prove] FAIL: no captured response with marker (agent may not have run)");
+        vscode.window.showErrorMessage(
+          `Auto-submit proof FAILED: submit gesture ran (${injectResult.submitMethod}) but Agent never responded / was not captured. Check that Agent actually started.`,
+        );
+        setStatus("error", "no capture after submit");
+        return;
+      }
+
+      output.appendLine(`[prove] PASS captured=${captured.text}`);
+      setStatus("idle", "auto-submit proved");
+      vscode.window.showInformationMessage(
+        `AUTO-SUBMIT PROVED via ${injectResult.submitMethod}. Captured: ${captured.text}`,
+      );
+    }),
+  );
+
   connectSocket();
   output.appendLine("Voice Cursor activated (Phase 1 spike).");
   output.appendLine("1) Start service: npm run service");
   output.appendLine("2) Run: Voice Cursor: Inventory Agent Commands");
-  output.appendLine("3) Run: Voice Cursor: Send Test Prompt");
+  output.appendLine("3) Run: Voice Cursor: Prove Auto Submit  ← gate before mic/TTS");
   output.appendLine("If capture fails: Voice Cursor: Diagnose Capture");
 }
 

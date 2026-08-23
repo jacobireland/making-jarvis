@@ -38,6 +38,10 @@
       {
         "command": "voiceCursor.diagnoseCapture",
         "title": "Voice Cursor: Diagnose Capture"
+      },
+      {
+        "command": "voiceCursor.proveAutoSubmit",
+        "title": "Voice Cursor: Prove Auto Submit"
       }
     ],
     "configuration": {
