@@ -118,11 +118,29 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/hooks/session-start") {
+      const body = (await readJson(req)) as Record<string, unknown>;
+      pushEvent({
+        type: "state",
+        state: "idle",
+        detail: "hooks sessionStart received",
+        at: new Date().toISOString(),
+      });
+      console.log("[voice-cursor] sessionStart hook", body.session_id ?? "");
+      json(res, 200, { ok: true });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/hooks/after-agent-response") {
       const body = (await readJson(req)) as Record<string, unknown>;
       const event = asAgentResponse(body);
       pushEvent(event);
       setState("idle", "agent response received");
+      console.log(
+        "[voice-cursor] agent_response",
+        event.spokenText.slice(0, 120),
+        `(chars=${event.text.length})`,
+      );
       json(res, 200, { ok: true, spokenText: event.spokenText });
       return;
     }

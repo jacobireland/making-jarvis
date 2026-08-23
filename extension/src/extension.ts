@@ -3,6 +3,7 @@ import WebSocket from "ws";
 import type { AgentResponseEvent, VoiceCursorEvent } from "@voice-cursor/shared";
 import { injectPrompt, type InjectionStrategy } from "./inject";
 import { inventoryAgentCommands, writeInventoryMarkdown } from "./inventory";
+import { diagnoseCapture } from "./diagnose";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
@@ -122,11 +123,23 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand("voiceCursor.diagnoseCapture", async () => {
+      output.appendLine("[diagnose] running…");
+      const report = await diagnoseCapture(serviceBase());
+      output.appendLine(JSON.stringify(report, null, 2));
+      output.show(true);
+      const summary = report.guidance[0] ?? "See Voice Cursor output channel for details.";
+      vscode.window.showInformationMessage(`Voice Cursor diagnose: ${summary}`);
+    }),
+  );
+
   connectSocket();
   output.appendLine("Voice Cursor activated (Phase 1 spike).");
   output.appendLine("1) Start service: npm run service");
   output.appendLine("2) Run: Voice Cursor: Inventory Agent Commands");
   output.appendLine("3) Run: Voice Cursor: Send Test Prompt");
+  output.appendLine("If capture fails: Voice Cursor: Diagnose Capture");
 }
 
 export function deactivate(): void {

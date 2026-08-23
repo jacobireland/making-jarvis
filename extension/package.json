@@ -34,6 +34,10 @@
       {
         "command": "voiceCursor.setInjectionStrategy",
         "title": "Voice Cursor: Set Prompt Injection Strategy"
+      },
+      {
+        "command": "voiceCursor.diagnoseCapture",
+        "title": "Voice Cursor: Diagnose Capture"
       }
     ],
     "configuration": {

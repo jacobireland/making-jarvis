@@ -25,12 +25,23 @@ Goal: prove **prompt in** + **response out** for the existing Cursor Agent befor
 ## 2. Capture completed Agent response
 - [ ] Ensure `.cursor/hooks.json` is loaded (reload window after clone if needed)
 - [ ] Ensure voice service is running
-- [ ] Manually run one Agent prompt
-- [ ] Check `.cursor/spike-events.jsonl` for hook payload
-- [ ] Check service: `curl -s http://127.0.0.1:4738/events | jq`
+- [ ] **Windows:** run `powershell -ExecutionPolicy Bypass -File .\scripts\fix-hooks-windows.ps1` then reload window (fixes missing `node` on Cursor's PATH)
+- [ ] Trust the workspace if Cursor prompts
+- [ ] Manually run one Agent prompt and press Enter
+- [ ] Check `.cursor/spike-events.jsonl` OR `%TEMP%\voice-cursor-hooks.log`
+- [ ] Check service: `curl http://127.0.0.1:4738/events`
+- [ ] Or run **Voice Cursor: Diagnose Capture**
 - [ ] Confirm extension status bar / info toast shows captured spoken text
 
 **Pass:** every Agent turn yields usable final text via hook → service → extension.
+
+### Capture troubleshooting
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| No `spike-events.jsonl` and no `%TEMP%\voice-cursor-hooks.log` | Hooks not running | Trust workspace, reload, run `fix-hooks-windows.ps1` |
+| Log exists, `/events` empty | Service down / wrong port | `npm run service`, then retry |
+| `/events` has `agent_response`, extension silent | Extension not connected | **Voice Cursor: Reconnect Voice Service** |
+| Prompt pasted but not sent | Auto-submit gap | Press Enter manually for Phase 1 |
 
 ## 3. Text-only end-to-end
 - [ ] Run **Voice Cursor: Send Test Prompt** with `SPIKE: reply with exactly PONG and nothing else.`
