@@ -8,10 +8,11 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $hooksPath = Join-Path $root ".cursor\hooks.json"
 
-$node = (Get-Command node -ErrorAction SilentlyContinue)?.Source
-if (-not $node) {
-  Write-Error "Could not find node on PATH. Install Node.js or open a shell where `node -v` works."
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCmd) {
+  Write-Error "Could not find node on PATH. Install Node.js or open a shell where 'node -v' works."
 }
+$node = $nodeCmd.Source
 
 Write-Host "Using node at: $node"
 
@@ -20,46 +21,28 @@ if (-not (Test-Path $relay)) {
   Write-Error "Missing relay script at $relay"
 }
 
-# Escape for JSON string
-$nodeJson = $node.Replace('\', '\\')
 $relayRel = ".cursor/hooks/relay.js"
+$nodeEscaped = $node.Replace("\", "\\")
 
-$hooks = @{
-  version = 1
-  hooks = @{
-    sessionStart = @(
-      @{ command = "`"$node`" $relayRel session-start"; timeout = 5000 }
-    )
-    afterAgentResponse = @(
-      @{ command = "`"$node`" $relayRel after-agent-response"; timeout = 5000 }
-    )
-    stop = @(
-      @{ command = "`"$node`" $relayRel stop"; timeout = 5000 }
-    )
-  }
-}
-
-$json = $hooks | ConvertTo-Json -Depth 6
-# PowerShell ConvertTo-Json can reorder; write a stable file instead.
 @"
 {
   "version": 1,
   "hooks": {
     "sessionStart": [
       {
-        "command": "\"$($node.Replace('\','\\'))\" $relayRel session-start",
+        "command": "\"$nodeEscaped\" $relayRel session-start",
         "timeout": 5000
       }
     ],
     "afterAgentResponse": [
       {
-        "command": "\"$($node.Replace('\','\\'))\" $relayRel after-agent-response",
+        "command": "\"$nodeEscaped\" $relayRel after-agent-response",
         "timeout": 5000
       }
     ],
     "stop": [
       {
-        "command": "\"$($node.Replace('\','\\'))\" $relayRel stop",
+        "command": "\"$nodeEscaped\" $relayRel stop",
         "timeout": 5000
       }
     ]
