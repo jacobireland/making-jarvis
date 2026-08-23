@@ -1,0 +1,88 @@
+{
+  "name": "voice-cursor",
+  "displayName": "Voice Cursor",
+  "description": "Voice interface to the existing Cursor Agent (Phase 1 spike)",
+  "version": "0.1.0",
+  "publisher": "making-jarvis",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "voiceCursor.sendTestPrompt",
+        "title": "Voice Cursor: Send Test Prompt"
+      },
+      {
+        "command": "voiceCursor.inventoryCommands",
+        "title": "Voice Cursor: Inventory Agent Commands"
+      },
+      {
+        "command": "voiceCursor.showLastResponse",
+        "title": "Voice Cursor: Show Last Agent Response"
+      },
+      {
+        "command": "voiceCursor.reconnectService",
+        "title": "Voice Cursor: Reconnect Voice Service"
+      },
+      {
+        "command": "voiceCursor.setInjectionStrategy",
+        "title": "Voice Cursor: Set Prompt Injection Strategy"
+      }
+    ],
+    "configuration": {
+      "title": "Voice Cursor",
+      "properties": {
+        "voiceCursor.serviceUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:4738",
+          "description": "Base URL for the local Voice Cursor service"
+        },
+        "voiceCursor.injectionStrategy": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "composer.newAgentChat+paste+submit",
+            "composer.newAgentChat+paste",
+            "clipboard-only"
+          ],
+          "description": "How to inject prompts into Cursor Agent during the Phase 1 spike"
+        },
+        "voiceCursor.submitCommandCandidates": {
+          "type": "array",
+          "default": [
+            "composer.startComposerPrompt",
+            "composer.submit",
+            "workbench.action.chat.submit",
+            "aichat.submit-chat"
+          ],
+          "items": { "type": "string" },
+          "description": "Candidate command IDs to try for auto-submit after pasting a prompt"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -w -p tsconfig.json",
+    "test": "node --import tsx --test src/**/*.test.ts || true"
+  },
+  "dependencies": {
+    "@voice-cursor/shared": "0.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "making-jarvis",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Voice Cursor — microphone/TTS interface to the existing Cursor Agent",
+  "workspaces": [
+    "shared",
+    "voice-service",
+    "extension"
+  ],
+  "scripts": {
+    "build": "npm run build -w shared && npm run build -w voice-service && npm run build -w extension",
+    "build:shared": "npm run build -w shared",
+    "build:service": "npm run build -w voice-service",
+    "build:extension": "npm run build -w extension",
+    "test": "npm run test -w shared && npm run test -w voice-service",
+    "service": "npm run start -w voice-service",
+    "service:dev": "npm run dev -w voice-service"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,2 @@
+# Ignore hook event log (local spike evidence)
+spike-events.jsonl

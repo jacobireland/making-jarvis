@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterAgentResponse": [
+      {
+        "command": "node .cursor/hooks/relay.js after-agent-response",
+        "timeout": 5000
+      }
+    ],
+    "stop": [
+      {
+        "command": "node .cursor/hooks/relay.js stop",
+        "timeout": 5000
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+**/dist/
+**/*.vsix
+.cursor/spike-events.jsonl
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+docs/spike-command-inventory.md
