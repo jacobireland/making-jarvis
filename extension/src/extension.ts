@@ -5,6 +5,7 @@ import { injectPrompt, type InjectionStrategy } from "./inject";
 import { inventoryAgentCommands, writeInventoryMarkdown } from "./inventory";
 import { diagnoseCapture } from "./diagnose";
 import { waitForCapturedMarker } from "./proveSubmit";
+import { runOneShotTalk } from "./oneShot";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
@@ -15,14 +16,15 @@ let socket: WebSocket | undefined;
 let lastAgentResponse: AgentResponseEvent | undefined;
 let reconnectTimer: NodeJS.Timeout | undefined;
 let extensionPath = "";
+let oneShotRunning = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionPath = context.extensionPath;
   output = vscode.window.createOutputChannel(OUTPUT_CHANNEL);
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.text = "$(unmute) Voice Cursor: idle";
-  status.tooltip = "Voice Cursor Phase 1 spike";
-  status.command = "voiceCursor.showLastResponse";
+  status.tooltip = "Voice Cursor: One-Shot Talk";
+  status.command = "voiceCursor.oneShotTalk";
   status.show();
 
   context.subscriptions.push(output, status);
@@ -195,12 +197,41 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand("voiceCursor.oneShotTalk", async () => {
+      if (oneShotRunning) {
+        vscode.window.showWarningMessage("Voice Cursor: one-shot already running");
+        return;
+      }
+      oneShotRunning = true;
+      output.show(true);
+      try {
+        const listenSeconds = vscode.workspace
+          .getConfiguration("voiceCursor")
+          .get<number>("listenSeconds", 7);
+        const newChat = vscode.workspace
+          .getConfiguration("voiceCursor")
+          .get<boolean>("oneShotNewChat", true);
+        await runOneShotTalk({
+          serviceBase: serviceBase(),
+          extensionPath,
+          listenSeconds,
+          newChat,
+          submitCandidates: getSubmitCandidates(),
+          log: (msg) => output.appendLine(msg),
+          setStatus,
+        });
+      } finally {
+        oneShotRunning = false;
+      }
+    }),
+  );
+
   connectSocket();
-  output.appendLine("Voice Cursor activated (Phase 1 spike).");
+  output.appendLine("Voice Cursor activated (Phase 2 one-shot).");
   output.appendLine("1) Start service: npm run service");
-  output.appendLine("2) Run: Voice Cursor: Inventory Agent Commands");
-  output.appendLine("3) Run: Voice Cursor: Prove Auto Submit  ← gate before mic/TTS");
-  output.appendLine("If capture fails: Voice Cursor: Diagnose Capture");
+  output.appendLine("2) Run: Voice Cursor: One-Shot Talk");
+  output.appendLine("   (or click the Voice Cursor status bar item)");
 }
 
 export function deactivate(): void {

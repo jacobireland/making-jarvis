@@ -1,8 +1,8 @@
 {
   "name": "voice-cursor",
   "displayName": "Voice Cursor",
-  "description": "Voice interface to the existing Cursor Agent (Phase 1 spike)",
-  "version": "0.1.0",
+  "description": "Voice interface to the existing Cursor Agent",
+  "version": "0.2.0",
   "publisher": "making-jarvis",
   "private": true,
   "engines": {
@@ -42,6 +42,10 @@
       {
         "command": "voiceCursor.proveAutoSubmit",
         "title": "Voice Cursor: Prove Auto Submit"
+      },
+      {
+        "command": "voiceCursor.oneShotTalk",
+        "title": "Voice Cursor: One-Shot Talk"
       }
     ],
     "configuration": {
@@ -51,6 +55,18 @@
           "type": "string",
           "default": "http://127.0.0.1:4738",
           "description": "Base URL for the local Voice Cursor service"
+        },
+        "voiceCursor.listenSeconds": {
+          "type": "number",
+          "default": 7,
+          "minimum": 2,
+          "maximum": 30,
+          "description": "How long One-Shot Talk listens to the microphone"
+        },
+        "voiceCursor.oneShotNewChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true, One-Shot Talk opens a new Agent chat each turn"
         },
         "voiceCursor.injectionStrategy": {
           "type": "string",

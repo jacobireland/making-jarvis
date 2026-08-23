@@ -8,16 +8,17 @@ import {
   type VoiceCursorEvent,
   type VoiceCursorState,
 } from "@voice-cursor/shared";
+import { listenOnce, speakText } from "./speech";
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
 const MAX_EVENTS = 200;
 const sockets = new Set<WebSocket>();
-
+let speechBusy = false;
 function pushEvent(event: VoiceCursorEvent): void {
   events.push(event);
   if (events.length > MAX_EVENTS) events.shift();
@@ -195,6 +196,60 @@ const server = http.createServer(async (req, res) => {
       }
       setState(next, typeof body.detail === "string" ? body.detail : undefined);
       json(res, 200, { ok: true, state });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/stt/listen") {
+      if (speechBusy) {
+        json(res, 409, { ok: false, error: "speech pipeline busy" });
+        return;
+      }
+      const body = (await readJson(req)) as Record<string, unknown>;
+      const seconds = typeof body.seconds === "number" ? body.seconds : 7;
+      speechBusy = true;
+      setState("listening", `recording ~${seconds}s`);
+      try {
+        const result = await listenOnce({ seconds });
+        setState("transcribing", result.engine);
+        pushEvent({
+          type: "utterance",
+          text: result.text,
+          receivedAt: new Date().toISOString(),
+        });
+        setState(result.text ? "idle" : "error", result.text ? "stt ok" : "empty transcript");
+        json(res, 200, { ok: true, ...result });
+      } catch (error) {
+        setState("error", error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        speechBusy = false;
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/tts/speak") {
+      if (speechBusy) {
+        json(res, 409, { ok: false, error: "speech pipeline busy" });
+        return;
+      }
+      const body = (await readJson(req)) as Record<string, unknown>;
+      const text = typeof body.text === "string" ? body.text : "";
+      if (!text.trim()) {
+        json(res, 400, { ok: false, error: "text required" });
+        return;
+      }
+      speechBusy = true;
+      setState("speaking", text.slice(0, 80));
+      try {
+        const result = await speakText(text);
+        setState("idle", "spoke");
+        json(res, 200, { ok: true, ...result });
+      } catch (error) {
+        setState("error", error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        speechBusy = false;
+      }
       return;
     }
 

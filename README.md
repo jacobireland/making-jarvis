@@ -2,35 +2,34 @@
 
 Voice interface to the **existing Cursor Agent**. Cursor remains responsible for coding; this project only handles microphone → prompt injection → response capture → speech.
 
-## Current status: Phase 1 spike
-
-Scaffold for proving the IDE bridge:
+## Current status: Phase 2 (one-shot talk)
 
 | Piece | Role |
 |---|---|
-| `extension/` | Cursor/VS Code extension: inventory commands, inject test prompts, show captured replies |
-| `voice-service/` | Local HTTP + WebSocket service on `127.0.0.1:4738` |
-| `.cursor/hooks/` | `afterAgentResponse` / `stop` relay into the voice service |
-| `shared/` | Event types + `toSpokenText()` sanitization |
+| `extension/` | One-Shot Talk, inject/auto-submit, capture display |
+| `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Windows STT/TTS |
+| `.cursor/hooks/` | `afterAgentResponse` → service |
+| `scripts/` | Windows Enter / STT / TTS helpers |
+| `shared/` | Event types + `toSpokenText()` |
 
-Follow **[docs/spike-phase1.md](docs/spike-phase1.md)** for the experiment checklist.
+## Quick start (Windows)
 
-## Quick start
-
-```bash
+```powershell
 npm install
 npm run build
 npm run service
 ```
 
-In Cursor:
+In Cursor (open the repo folder that contains `.cursor/hooks.json`):
 
-1. Install / run the `extension` package (Extensions: Install from Location → `extension/`, or launch via F5).
-2. Command Palette → **Voice Cursor: Inventory Agent Commands**
-3. Command Palette → **Voice Cursor: Send Test Prompt**
+1. **Developer: Install Extension from Location…** → select `extension/`
+2. Command Palette → **Voice Cursor: One-Shot Talk**
+3. Speak when prompted, confirm transcript, wait for spoken reply
+
+Details: [docs/phase2-oneshot.md](docs/phase2-oneshot.md) · Phase 1 checklist: [docs/spike-phase1.md](docs/spike-phase1.md)
 
 ## Design constraints
 
 - Do **not** build a separate coding agent.
 - Preserve normal Cursor Agent panel, diffs, and terminal.
-- Continuous VAD listening and TTS come after the Phase 1 Go decision.
+- Auto-submit uses focus + Enter (UI automation); avoid clicking away mid-send.
