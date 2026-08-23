@@ -8,11 +8,13 @@ import {
   type VoiceCursorEvent,
   type VoiceCursorState,
 } from "@voice-cursor/shared";
-import { listenOnce, speakText } from "./speech";
+import { listenOnce, speakText, loadDotEnv, describeSttConfig } from "./speech";
+
+loadDotEnv();
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
@@ -101,13 +103,14 @@ const server = http.createServer(async (req, res) => {
       const last = [...events].reverse().find((e) => e.type === "agent_response") as
         | AgentResponseEvent
         | undefined;
-      const body: HealthResponse = {
+      const body: HealthResponse & { stt?: ReturnType<typeof describeSttConfig> } = {
         ok: true,
         service: "voice-cursor",
         version: VERSION,
         state,
         lastAgentResponseAt: last?.receivedAt,
         eventCount: events.length,
+        stt: describeSttConfig(),
       };
       json(res, 200, body);
       return;
@@ -277,6 +280,10 @@ wss.on("connection", (socket) => {
 });
 
 server.listen(PORT, HOST, () => {
+  const stt = describeSttConfig();
   console.log(`[voice-cursor] listening on http://${HOST}:${PORT}`);
   console.log(`[voice-cursor] websocket ws://${HOST}:${PORT}/ws`);
+  console.log(
+    `[voice-cursor] STT preferred=${stt.engine} resolved=${stt.resolved} openai=${stt.hasOpenAI} groq=${stt.hasGroq}`,
+  );
 });

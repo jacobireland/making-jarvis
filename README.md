@@ -17,6 +17,8 @@ Voice interface to the **existing Cursor Agent**. Cursor remains responsible for
 ```powershell
 npm install
 npm run build
+copy .env.example .env
+# Put OPENAI_API_KEY=... in .env for accurate Whisper STT
 npm run service
 ```
 
