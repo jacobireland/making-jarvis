@@ -23,17 +23,19 @@ Goal: prove **prompt in** + **response out** for the existing Cursor Agent befor
 **Pass:** at least one method gets text into Agent and produces a normal turn.
 
 ## 2. Capture completed Agent response
-- [ ] Ensure `.cursor/hooks.json` is loaded (reload window after clone if needed)
-- [ ] Ensure voice service is running
-- [ ] **Windows:** run `powershell -ExecutionPolicy Bypass -File .\scripts\fix-hooks-windows.ps1` then reload window (fixes missing `node` on Cursor's PATH)
-- [ ] Trust the workspace if Cursor prompts
-- [ ] Manually run one Agent prompt and press Enter
-- [ ] Check `.cursor/spike-events.jsonl` OR `%TEMP%\voice-cursor-hooks.log`
-- [ ] Check service: `curl http://127.0.0.1:4738/events`
+- [x] Ensure `.cursor/hooks.json` is loaded (reload window after clone if needed)
+- [x] Ensure voice service is running
+- [x] **Windows:** run `powershell -ExecutionPolicy Bypass -File .\scripts\fix-hooks-windows.ps1` then reload window (fixes missing `node` on Cursor's PATH)
+- [x] Trust the workspace if Cursor prompts
+- [x] Manually run one Agent prompt and press Enter
+- [x] Check `.cursor/spike-events.jsonl` OR `%TEMP%\voice-cursor-hooks.log`
+- [x] Check service: `curl http://127.0.0.1:4738/events`
 - [ ] Or run **Voice Cursor: Diagnose Capture**
 - [ ] Confirm extension status bar / info toast shows captured spoken text
 
 **Pass:** every Agent turn yields usable final text via hook → service → extension.
+
+**Note:** Workspace folder must be the git repo root that contains `.cursor/hooks.json` (e.g. `...\Making-Jarvis\making-jarvis`), not a parent folder.
 
 ### Capture troubleshooting
 | Symptom | Likely cause | Fix |

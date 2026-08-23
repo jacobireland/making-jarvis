@@ -147,21 +147,17 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/hooks/stop") {
       const body = (await readJson(req)) as Record<string, unknown>;
+      const status = typeof body.status === "string" ? body.status : "unknown";
       pushEvent({
         type: "state",
         state: "idle",
-        detail: "agent stop",
+        detail: `agent stop (${status})`,
         at: new Date().toISOString(),
       });
-      // Some Cursor versions may only emit useful text on stop; try capture.
-      const maybeText =
-        (typeof body.text === "string" && body.text) ||
-        (typeof body.status === "string" && body.status) ||
-        "";
-      if (maybeText && maybeText.length > 2) {
-        pushEvent(asAgentResponse({ ...body, text: maybeText }));
-      }
-      json(res, 200, { ok: true });
+      // stop payload is { status, loop_count } — not assistant text.
+      // Spoken replies come only from afterAgentResponse.
+      console.log("[voice-cursor] stop", status);
+      json(res, 200, { ok: true, status });
       return;
     }
 
