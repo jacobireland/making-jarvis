@@ -95,44 +95,43 @@ export async function injectPrompt(
     let submitMethod: string | undefined;
 
     if (shouldSubmit) {
-      // A) VS Code "type" newline into focused input (no OS focus issues).
-      if (await tryTypeNewline(log)) {
-        details.push("tried vscode type newline");
-        // Don't trust yet — verification is via capture. Record as candidate.
-        submitMethod = "vscode-type-newline";
-        submitted = true;
-      }
+      // Do NOT use vscode `type \n` — in Composer that inserts a newline, not submit.
+      // Do NOT run speculative composer.* "submit" commands before Enter — they can
+      // close/reopen panels (e.g. startComposerPrompt).
 
-      // B) Focus-safe OS Enter into the Cursor window.
       await tryCommand("composer.focusComposer", log);
-      await delay(150);
+      await delay(200);
+
       const enter = await sendEnterToCursor("enter", options.extensionPath, log);
       details.push(`os-enter: ${enter.detail}`);
       if (enter.ok) {
         submitted = true;
         submitMethod = "os-enter";
-        log("submitted via focus-safe OS Enter");
+        log("sent focus-safe OS Enter");
       }
 
-      // C) Some Cursor bindings use Ctrl+Enter to send.
-      if (!enter.ok) {
-        const ctrl = await sendEnterToCursor("ctrl-enter", options.extensionPath, log);
-        details.push(`os-ctrl-enter: ${ctrl.detail}`);
-        if (ctrl.ok) {
-          submitted = true;
-          submitMethod = "os-ctrl-enter";
-          log("submitted via focus-safe OS Ctrl+Enter");
-        }
+      // Fallback: some keymaps use Ctrl+Enter to send.
+      const ctrl = await sendEnterToCursor("ctrl-enter", options.extensionPath, log);
+      details.push(`os-ctrl-enter: ${ctrl.detail}`);
+      if (ctrl.ok) {
+        submitted = true;
+        if (!submitMethod) submitMethod = "os-ctrl-enter";
+        log("sent focus-safe OS Ctrl+Enter");
       }
 
-      // D) Last-resort command IDs (usually missing / no-ops on Cursor).
+      // Record whether known submit command IDs even exist (informational only).
       for (const commandId of [
         "composer.startGeneration",
         ...options.submitCandidates,
         "workbench.action.chat.submit",
       ]) {
         triedSubmitCommands.push(commandId);
-        await tryCommand(commandId, log);
+        const available = await vscode.commands.getCommands(true);
+        if (available.includes(commandId)) {
+          log(`submit candidate exists (not executed): ${commandId}`);
+        } else {
+          log(`submit candidate missing: ${commandId}`);
+        }
       }
     }
 
@@ -151,17 +150,6 @@ export async function injectPrompt(
     } catch {
       // ignore
     }
-  }
-}
-
-async function tryTypeNewline(log: (message: string) => void): Promise<boolean> {
-  try {
-    await vscode.commands.executeCommand("type", { text: "\n" });
-    log("ran command: type(\\n)");
-    return true;
-  } catch (error) {
-    log(`type(\\n) failed: ${error instanceof Error ? error.message : String(error)}`);
-    return false;
   }
 }
 

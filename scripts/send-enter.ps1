@@ -23,7 +23,6 @@ public class VoiceCursorWin {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
   public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
@@ -31,7 +30,6 @@ public class VoiceCursorWin {
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
 
-  public const int SW_RESTORE = 9;
   public const byte VK_RETURN = 0x0D;
   public const byte VK_CONTROL = 0x11;
   public const uint KEYEVENTF_KEYUP = 0x0002;
@@ -47,8 +45,8 @@ function Get-CursorHwnd {
     [void][VoiceCursorWin]::GetWindowText($hwnd, $sb, $sb.Capacity)
     $title = $sb.ToString()
     if ([string]::IsNullOrWhiteSpace($title)) { return $true }
-    # Prefer real Cursor work windows; skip Windows Terminal / powershell hosts.
-    if ($title -match 'Cursor' -and $title -notmatch 'powershell|Windows Terminal|cmd\.exe') {
+    # Prefer real Cursor work windows; skip terminals / this script host.
+    if ($title -match 'Cursor' -and $title -notmatch 'powershell|Windows Terminal|cmd\.exe|Voice Cursor') {
       $candidates.Add([pscustomobject]@{ Hwnd = $hwnd; Title = $title }) | Out-Null
     }
     return $true
@@ -57,7 +55,6 @@ function Get-CursorHwnd {
 
   if ($candidates.Count -eq 0) { return [IntPtr]::Zero }
 
-  # Prefer titles that look like the workspace / Extension Host over generic.
   $preferred = $candidates | Where-Object {
     $_.Title -match 'making-jarvis|Making-Jarvis|Extension Development Host'
   } | Select-Object -First 1
@@ -67,13 +64,13 @@ function Get-CursorHwnd {
 
 function Focus-Hwnd([IntPtr]$hwnd) {
   if ($hwnd -eq [IntPtr]::Zero) { return $false }
-  [void][VoiceCursorWin]::ShowWindow($hwnd, [VoiceCursorWin]::SW_RESTORE)
 
+  # Do NOT call ShowWindow(SW_RESTORE): it can resize/maximize unexpectedly.
   $fg = [VoiceCursorWin]::GetForegroundWindow()
-  $pid = 0
-  $foreThread = [VoiceCursorWin]::GetWindowThreadProcessId($fg, [ref]$pid)
-  $targetPid = 0
-  $targetThread = [VoiceCursorWin]::GetWindowThreadProcessId($hwnd, [ref]$targetPid)
+  $fgProcId = 0
+  $foreThread = [VoiceCursorWin]::GetWindowThreadProcessId($fg, [ref]$fgProcId)
+  $targetProcId = 0
+  $targetThread = [VoiceCursorWin]::GetWindowThreadProcessId($hwnd, [ref]$targetProcId)
   $curThread = [VoiceCursorWin]::GetCurrentThreadId()
 
   if ($foreThread -ne $targetThread) {
@@ -103,7 +100,7 @@ if ($hwnd -eq [IntPtr]::Zero) {
 }
 
 $focused = Focus-Hwnd $hwnd
-Start-Sleep -Milliseconds 250
+Start-Sleep -Milliseconds 200
 
 if ($Chord -eq "ctrl-enter") {
   Send-Key ([VoiceCursorWin]::VK_CONTROL) -Down
