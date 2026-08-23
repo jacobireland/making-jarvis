@@ -14,8 +14,10 @@ let status: vscode.StatusBarItem;
 let socket: WebSocket | undefined;
 let lastAgentResponse: AgentResponseEvent | undefined;
 let reconnectTimer: NodeJS.Timeout | undefined;
+let extensionPath = "";
 
 export function activate(context: vscode.ExtensionContext): void {
+  extensionPath = context.extensionPath;
   output = vscode.window.createOutputChannel(OUTPUT_CHANNEL);
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.text = "$(unmute) Voice Cursor: idle";
@@ -44,6 +46,7 @@ export function activate(context: vscode.ExtensionContext): void {
           strategy,
           submitCandidates: getSubmitCandidates(),
           log: (msg) => output.appendLine(`[inject] ${msg}`),
+          extensionPath,
         });
         output.appendLine(`[inject] result=${JSON.stringify(result)}`);
         vscode.window.showInformationMessage(
@@ -154,6 +157,7 @@ export function activate(context: vscode.ExtensionContext): void {
           submitCandidates: getSubmitCandidates(),
           log: (msg) => output.appendLine(`[prove/inject] ${msg}`),
           newChat: true,
+          extensionPath,
         });
         output.appendLine(`[prove] inject=${JSON.stringify(injectResult)}`);
       } catch (error) {
@@ -164,16 +168,8 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      if (!injectResult.submitted) {
-        vscode.window.showErrorMessage(
-          "Auto-submit proof FAILED: could not simulate submit (OS Enter). Do not proceed to mic/TTS yet.",
-        );
-        setStatus("error", "submit not possible");
-        return;
-      }
-
       vscode.window.showInformationMessage(
-        `Submit gesture sent via ${injectResult.submitMethod}. Waiting for Agent capture of ${marker}…`,
+        `Submit gestures sent (${injectResult.submitMethod ?? "none"}). Waiting for captured marker ${marker} — do not press Enter…`,
       );
 
       const captured = await waitForCapturedMarker(serviceBase(), marker, {
@@ -183,17 +179,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (!captured.ok) {
         output.appendLine("[prove] FAIL: no captured response with marker (agent may not have run)");
+        output.appendLine(`[prove] inject details=${JSON.stringify(injectResult.details)}`);
         vscode.window.showErrorMessage(
-          `Auto-submit proof FAILED: submit gesture ran (${injectResult.submitMethod}) but Agent never responded / was not captured. Check that Agent actually started.`,
+          "Auto-submit proof FAILED: prompt was pasted but Agent did not run/capture. Do not proceed to mic/TTS yet.",
         );
         setStatus("error", "no capture after submit");
         return;
       }
 
-      output.appendLine(`[prove] PASS captured=${captured.text}`);
+      output.appendLine(`[prove] PASS captured=${captured.text} via=${injectResult.submitMethod}`);
       setStatus("idle", "auto-submit proved");
       vscode.window.showInformationMessage(
-        `AUTO-SUBMIT PROVED via ${injectResult.submitMethod}. Captured: ${captured.text}`,
+        `AUTO-SUBMIT PROVED (${injectResult.submitMethod}). Captured: ${captured.text}`,
       );
     }),
   );

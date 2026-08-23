@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 
@@ -16,13 +18,15 @@ export type InjectResult = {
   submitMethod?: string;
   triedSubmitCommands: string[];
   openedWith?: string;
+  details: string[];
 };
 
 /**
  * Inject a prompt into Cursor Agent and attempt auto-submit.
  *
- * Important: many composer.* commands return without error but do NOT submit.
- * On Cursor, the reliable community approach is focusComposer + OS-level Enter.
+ * Cursor does not expose a reliable submit command. Working approach used by
+ * community tools: focus composer, paste, then OS-level Enter into the Cursor
+ * window (not a child PowerShell that steals focus).
  */
 export async function injectPrompt(
   prompt: string,
@@ -30,12 +34,13 @@ export async function injectPrompt(
     strategy: InjectionStrategy;
     submitCandidates: string[];
     log: (message: string) => void;
-    /** If true, open a new agent chat. If false, try to use current chat. */
     newChat?: boolean;
+    extensionPath?: string;
   },
 ): Promise<InjectResult> {
-  const { strategy, submitCandidates, log } = options;
+  const { strategy, log } = options;
   const newChat = options.newChat ?? true;
+  const details: string[] = [];
   const previousClipboard = await vscode.env.clipboard.readText();
 
   try {
@@ -47,6 +52,7 @@ export async function injectPrompt(
         usedStrategy: "clipboard-only",
         submitted: false,
         triedSubmitCommands: [],
+        details,
       };
     }
 
@@ -67,20 +73,20 @@ export async function injectPrompt(
           usedStrategy: "clipboard-only-fallback",
           submitted: false,
           triedSubmitCommands: [],
+          details,
         };
       }
-      await delay(250);
+      await delay(350);
     } else {
       openedWith = "current-chat";
     }
 
-    // Focus the composer input before paste/submit.
     await tryCommand("composer.focusComposer", log);
-    await delay(150);
+    await delay(200);
 
     await vscode.commands.executeCommand("editor.action.clipboardPasteAction");
     log(`pasted after ${openedWith}`);
-    await delay(200);
+    await delay(300);
 
     const shouldSubmit =
       strategy === "auto" || strategy === "composer.newAgentChat+paste+submit";
@@ -89,29 +95,44 @@ export async function injectPrompt(
     let submitMethod: string | undefined;
 
     if (shouldSubmit) {
-      // 1) Try known command IDs, but do NOT trust "did not throw" as success.
-      //    We still attempt them in case a future Cursor version wires them up.
-      for (const commandId of [
-        "composer.startGeneration",
-        "composer.startComposerPrompt",
-        ...submitCandidates,
-        "workbench.action.chat.submit",
-      ]) {
-        if (triedSubmitCommands.includes(commandId)) continue;
-        triedSubmitCommands.push(commandId);
-        await tryCommand(commandId, log);
+      // A) VS Code "type" newline into focused input (no OS focus issues).
+      if (await tryTypeNewline(log)) {
+        details.push("tried vscode type newline");
+        // Don't trust yet — verification is via capture. Record as candidate.
+        submitMethod = "vscode-type-newline";
+        submitted = true;
       }
 
-      // 2) Reliable path for Cursor: OS-level Enter while composer is focused.
+      // B) Focus-safe OS Enter into the Cursor window.
       await tryCommand("composer.focusComposer", log);
-      await delay(100);
-      const enterOk = await sendEnterKey(log);
-      if (enterOk) {
+      await delay(150);
+      const enter = await sendEnterToCursor("enter", options.extensionPath, log);
+      details.push(`os-enter: ${enter.detail}`);
+      if (enter.ok) {
         submitted = true;
         submitMethod = "os-enter";
-        log("submitted via OS Enter key simulation");
-      } else {
-        log("OS Enter simulation failed");
+        log("submitted via focus-safe OS Enter");
+      }
+
+      // C) Some Cursor bindings use Ctrl+Enter to send.
+      if (!enter.ok) {
+        const ctrl = await sendEnterToCursor("ctrl-enter", options.extensionPath, log);
+        details.push(`os-ctrl-enter: ${ctrl.detail}`);
+        if (ctrl.ok) {
+          submitted = true;
+          submitMethod = "os-ctrl-enter";
+          log("submitted via focus-safe OS Ctrl+Enter");
+        }
+      }
+
+      // D) Last-resort command IDs (usually missing / no-ops on Cursor).
+      for (const commandId of [
+        "composer.startGeneration",
+        ...options.submitCandidates,
+        "workbench.action.chat.submit",
+      ]) {
+        triedSubmitCommands.push(commandId);
+        await tryCommand(commandId, log);
       }
     }
 
@@ -121,10 +142,10 @@ export async function injectPrompt(
       submitMethod,
       triedSubmitCommands,
       openedWith,
+      details,
     };
   } finally {
-    // Restore clipboard after paste+submit have had time to consume it.
-    await delay(300);
+    await delay(400);
     try {
       await vscode.env.clipboard.writeText(previousClipboard);
     } catch {
@@ -133,41 +154,88 @@ export async function injectPrompt(
   }
 }
 
-export async function sendEnterKey(log: (message: string) => void): Promise<boolean> {
-  const platform = process.platform;
+async function tryTypeNewline(log: (message: string) => void): Promise<boolean> {
   try {
-    if (platform === "win32") {
-      // SendKeys targets the foreground window; Cursor should already be focused.
-      const script = [
-        "Add-Type -AssemblyName System.Windows.Forms",
-        "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')",
-      ].join("; ");
-      await execFileAsync(
-        "powershell.exe",
-        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-        { windowsHide: true, timeout: 5000 },
-      );
-      return true;
-    }
-
-    if (platform === "darwin") {
-      await execFileAsync("osascript", ["-e", 'tell application "System Events" to keystroke return'], {
-        timeout: 5000,
-      });
-      return true;
-    }
-
-    // Linux
-    try {
-      await execFileAsync("xdotool", ["key", "Return"], { timeout: 5000 });
-      return true;
-    } catch {
-      log("xdotool not available; install xdotool for Linux auto-submit");
-      return false;
-    }
+    await vscode.commands.executeCommand("type", { text: "\n" });
+    log("ran command: type(\\n)");
+    return true;
   } catch (error) {
-    log(`sendEnterKey failed: ${error instanceof Error ? error.message : String(error)}`);
+    log(`type(\\n) failed: ${error instanceof Error ? error.message : String(error)}`);
     return false;
+  }
+}
+
+export async function sendEnterToCursor(
+  chord: "enter" | "ctrl-enter",
+  extensionPath: string | undefined,
+  log: (message: string) => void,
+): Promise<{ ok: boolean; detail: string }> {
+  if (process.platform !== "win32") {
+    return sendEnterKeyNonWindows(chord, log);
+  }
+
+  const script = resolveSendEnterScript(extensionPath);
+  if (!script) {
+    log("send-enter.ps1 not found");
+    return { ok: false, detail: "script missing" };
+  }
+
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script,
+        "-Chord",
+        chord,
+      ],
+      { windowsHide: true, timeout: 8000 },
+    );
+    const detail = `${stdout} ${stderr}`.trim();
+    log(`send-enter.ps1: ${detail}`);
+    return { ok: /ok focused=/i.test(detail), detail };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`send-enter.ps1 failed: ${message}`);
+    return { ok: false, detail: message };
+  }
+}
+
+function resolveSendEnterScript(extensionPath?: string): string | undefined {
+  const candidates = [
+    extensionPath ? path.join(extensionPath, "..", "scripts", "send-enter.ps1") : "",
+    path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "", "scripts", "send-enter.ps1"),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+async function sendEnterKeyNonWindows(
+  chord: "enter" | "ctrl-enter",
+  log: (message: string) => void,
+): Promise<{ ok: boolean; detail: string }> {
+  try {
+    if (process.platform === "darwin") {
+      const src =
+        chord === "ctrl-enter"
+          ? 'tell application "System Events" to keystroke return using control down'
+          : 'tell application "System Events" to keystroke return';
+      await execFileAsync("osascript", ["-e", src], { timeout: 5000 });
+      return { ok: true, detail: "osascript" };
+    }
+    const args = chord === "ctrl-enter" ? ["key", "ctrl+Return"] : ["key", "Return"];
+    await execFileAsync("xdotool", args, { timeout: 5000 });
+    return { ok: true, detail: "xdotool" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`non-windows enter failed: ${message}`);
+    return { ok: false, detail: message };
   }
 }
 
