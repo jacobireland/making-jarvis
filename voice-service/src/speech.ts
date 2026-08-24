@@ -7,6 +7,7 @@ import { MsEdgeTTS, OUTPUT_FORMAT, ProsodyOptions } from "msedge-tts";
 import {
   FluxTtsSession,
   FLUX_TTS_SAMPLE_RATE,
+  parseFluxExpressivity,
   writePcmWavFile,
 } from "./flux-tts";
 import {
@@ -217,6 +218,10 @@ function snapFluxSpeed(value: number): number {
   return best;
 }
 
+function resolveDeepgramTtsExpressivity(): number {
+  return parseFluxExpressivity(process.env.VOICE_CURSOR_TTS_EXPRESSIVITY);
+}
+
 function resolveDeepgramTtsSpeed(): number {
   const raw = process.env.VOICE_CURSOR_TTS_RATE?.trim();
   let numeric: number | undefined;
@@ -269,6 +274,7 @@ export function describeTtsConfig(): {
   resolved: string;
   voice: string;
   rate: number | string;
+  expressivity?: number;
   hasDeepgram: boolean;
   stream: boolean;
 } {
@@ -294,15 +300,19 @@ export function describeTtsConfig(): {
   // When resolved to deepgram, surface Flux/Aura model (not an Edge leftover).
   const displayVoice =
     resolved === "deepgram" ? resolveDeepgramTtsModel() : voice;
+  const deepgramModel = resolveDeepgramTtsModel();
 
   return {
     engine: preferred,
     resolved,
     voice: displayVoice,
     rate: resolved === "deepgram" ? resolveDeepgramTtsSpeed() : resolveTtsRate(),
+    expressivity:
+      resolved === "deepgram" && isFluxTtsModel(deepgramModel)
+        ? resolveDeepgramTtsExpressivity()
+        : undefined,
     hasDeepgram,
-    stream:
-      resolved === "deepgram" && shouldStreamDeepgramTts(resolveDeepgramTtsModel()),
+    stream: resolved === "deepgram" && shouldStreamDeepgramTts(deepgramModel),
   };
 }
 
@@ -1573,7 +1583,8 @@ async function ensureFluxSession(): Promise<FluxTtsSession> {
   if (!key) throw new Error("DEEPGRAM_API_KEY not set");
   const model = resolveDeepgramTtsModel();
   const speed = resolveDeepgramTtsSpeed();
-  const configKey = `${model}|${speed}`;
+  const expressivity = resolveDeepgramTtsExpressivity();
+  const configKey = `${model}|${speed}|${expressivity}`;
   if (fluxSession && fluxSession.configKey === configKey) {
     await fluxSession.ensureConnected();
     return fluxSession;
@@ -1586,7 +1597,7 @@ async function ensureFluxSession(): Promise<FluxTtsSession> {
     }
     fluxSession = null;
   }
-  const session = new FluxTtsSession({ apiKey: key, model, speed });
+  const session = new FluxTtsSession({ apiKey: key, model, speed, expressivity });
   await session.ensureConnected();
   fluxSession = session;
   return session;
@@ -1604,6 +1615,9 @@ async function synthDeepgramChunk(text: string, outPath: string): Promise<string
     encoding: "mp3",
     speed: String(speed),
   });
+  if (flux) {
+    params.set("expressivity", String(resolveDeepgramTtsExpressivity()));
+  }
   // Flux voices live on /v2/speak; Aura remains on /v1/speak.
   const endpoint = flux
     ? `https://api.deepgram.com/v2/speak?${params}`
@@ -1690,10 +1704,11 @@ async function speakWithDeepgramFluxPcmStream(text: string): Promise<{
 }> {
   const voice = resolveDeepgramTtsModel();
   const speed = resolveDeepgramTtsSpeed();
+  const expressivity = resolveDeepgramTtsExpressivity();
   const totalStarted = Date.now();
 
   console.log(
-    `[voice-cursor] deepgram-tts-ws pcm-stream chars=${text.length} voice=${voice} speed=${speed} sampleRate=${FLUX_TTS_SAMPLE_RATE}`,
+    `[voice-cursor] deepgram-tts-ws pcm-stream chars=${text.length} voice=${voice} speed=${speed} expressivity=${expressivity} sampleRate=${FLUX_TTS_SAMPLE_RATE}`,
   );
 
   const session = await ensureFluxSession();
@@ -1746,12 +1761,13 @@ async function speakWithDeepgramFluxSentenceWavs(text: string): Promise<{
 }> {
   const voice = resolveDeepgramTtsModel();
   const speed = resolveDeepgramTtsSpeed();
+  const expressivity = resolveDeepgramTtsExpressivity();
   const totalStarted = Date.now();
   let firstAudioMs: number | undefined;
   const sentences = sentencesForFluxTts(text);
 
   console.log(
-    `[voice-cursor] deepgram-tts-ws sentence-wavs sentences=${sentences.length} chars=${text.length} voice=${voice} speed=${speed}`,
+    `[voice-cursor] deepgram-tts-ws sentence-wavs sentences=${sentences.length} chars=${text.length} voice=${voice} speed=${speed} expressivity=${expressivity}`,
   );
 
   const session = await ensureFluxSession();
@@ -1829,11 +1845,12 @@ async function speakWithDeepgramRest(text: string): Promise<{
 }> {
   const voice = resolveDeepgramTtsModel();
   const speed = resolveDeepgramTtsSpeed();
+  const expressivity = isFluxTtsModel(voice) ? resolveDeepgramTtsExpressivity() : undefined;
   const totalStarted = Date.now();
   let firstAudioMs: number | undefined;
   const chunks = chunkForTts(text);
   console.log(
-    `[voice-cursor] deepgram-tts-rest speak chunks=${chunks.length} chars=${text.length} voice=${voice} speed=${speed}`,
+    `[voice-cursor] deepgram-tts-rest speak chunks=${chunks.length} chars=${text.length} voice=${voice} speed=${speed} expressivity=${expressivity ?? "n/a"}`,
   );
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-dg-tts-"));
@@ -1844,7 +1861,7 @@ async function speakWithDeepgramRest(text: string): Promise<{
       await synthDeepgramChunk(chunk, outPath);
       const bytes = fs.statSync(outPath).size;
       console.log(
-        `[voice-cursor] deepgram-tts-rest chunk=${index} bytes=${bytes} voice=${voice} speed=${speed} synthMs=${Date.now() - synthStarted}`,
+        `[voice-cursor] deepgram-tts-rest chunk=${index} bytes=${bytes} voice=${voice} speed=${speed} expressivity=${expressivity ?? "n/a"} synthMs=${Date.now() - synthStarted}`,
       );
       return outPath;
     };

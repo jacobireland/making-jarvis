@@ -26,6 +26,9 @@
 |---|---|---|
 | `VOICE_CURSOR_SPEAK_THOUGHTS` | `true` | Speak `afterAgentThought` blocks during an armed voice turn |
 | `VOICE_CURSOR_SPEAK_FULL_THOUGHTS` | `false` | `true` = full expanded Thought; default = last sentence only |
+| `VOICE_CURSOR_TTS_VOICE` | `flux-marcelo-en` | Flux (or Aura) TTS voice / model |
+| `VOICE_CURSOR_TTS_RATE` | `1.1` | Flux speaking rate (`0.85`–`1.15` in `0.05` steps) |
+| `VOICE_CURSOR_TTS_EXPRESSIVITY` | `0` | Flux delivery register (`-2` calm … `2` animated). Restart service after changing. |
 | `VOICE_CURSOR_VAD` | `true` | `0` = never stream Flux listen (WAV click-to-send only) |
 | `VOICE_CURSOR_EOT_THRESHOLD` | `0.7` | Flux end-of-turn confidence (`0.5`–`0.9`; higher = more patient) |
 | `VOICE_CURSOR_EOT_TIMEOUT_MS` | `7000` | Force EndOfTurn after this much silence |

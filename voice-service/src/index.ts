@@ -548,7 +548,7 @@ server.listen(PORT, HOST, () => {
     `[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved} deepgram=${stt.hasDeepgram} openai=${stt.hasOpenAI} vad=${stt.vad} streamListen=${stt.streamListen}`,
   );
   console.log(
-    `[voice-cursor] TTS engine=${tts.engine} resolved=${tts.resolved} voice=${tts.voice} rate=${tts.rate} stream=${tts.stream} deepgram=${tts.hasDeepgram}`,
+    `[voice-cursor] TTS engine=${tts.engine} resolved=${tts.resolved} voice=${tts.voice} rate=${tts.rate} expressivity=${tts.expressivity ?? "n/a"} stream=${tts.stream} deepgram=${tts.hasDeepgram}`,
   );
   logAuthHints();
   void warmTts();
