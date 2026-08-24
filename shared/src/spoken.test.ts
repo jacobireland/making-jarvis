@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { toSpokenText } from "./spoken";
+import {
+  SPOKEN_STRUCTURE_PAUSE,
+  splitSpokenForPauses,
+  toSpokenText,
+} from "./spoken";
 
 test("speaks short answers mostly as-is", () => {
   assert.equal(toSpokenText("PONG"), "PONG.");
@@ -14,14 +18,19 @@ test("strips code fences", () => {
   assert.doesNotMatch(spoken, /export const/);
 });
 
-test("preserves paragraph boundaries as sentence pauses", () => {
+test("marks paragraph boundaries for a longer pause than a period", () => {
   const raw =
     "Kind of, but not in the friendship way.\n\nYard bees are not studying cheekbones.";
   const spoken = toSpokenText(raw);
-  assert.match(spoken, /way\.\s+Yard bees/i);
+  assert.match(
+    spoken,
+    new RegExp(`way\\.\\s*${SPOKEN_STRUCTURE_PAUSE}\\s*Yard bees`, "i"),
+  );
+  const parts = splitSpokenForPauses(spoken);
+  assert.equal(parts.length, 2);
 });
 
-test("turns label-style line lists into separate spoken sentences", () => {
+test("marks label-style line lists for structure pauses", () => {
   const raw = `What they do learn is the stuff that actually matters to them:
 
 Scent — soap, laundry detergent, sweat, the garden itself
@@ -29,11 +38,12 @@ How she moves — slow and calm vs. flailing
 Colors and shapes — hats, shirts, hair`;
   const spoken = toSpokenText(raw);
   assert.match(spoken, /matters to them\./i);
-  assert.match(spoken, /garden itself\.\s+How she moves/i);
-  assert.match(spoken, /flailing\.\s+Colors and shapes/i);
   assert.doesNotMatch(spoken, /itself How she moves/i);
+  assert.ok(spoken.includes(SPOKEN_STRUCTURE_PAUSE));
+  const parts = splitSpokenForPauses(spoken);
+  assert.ok(parts.length >= 3);
+  assert.match(parts.join(" "), /How she moves/i);
 });
-
 
 test("caps long responses", () => {
   const raw = "Word ".repeat(200);

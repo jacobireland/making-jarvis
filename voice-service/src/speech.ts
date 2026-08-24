@@ -9,6 +9,7 @@ import {
   FLUX_TTS_SAMPLE_RATE,
   writePcmWavFile,
 } from "./flux-tts";
+import { splitSpokenForPauses } from "@voice-cursor/shared";
 
 const execFileAsync = promisify(execFile);
 
@@ -1305,7 +1306,7 @@ async function speakWithDeepgramFluxStream(text: string): Promise<{
   return speakWithDeepgramFluxSentenceWavs(text);
 }
 
-/** Preferred path: one Flux turn for the full reply, play PCM continuously. */
+/** Preferred path: Flux turns per structure chunk, with real silence between paragraphs/lists. */
 async function speakWithDeepgramFluxPcmStream(text: string): Promise<{
   engine: string;
   voice: string;
@@ -1315,35 +1316,53 @@ async function speakWithDeepgramFluxPcmStream(text: string): Promise<{
   const voice = resolveDeepgramTtsModel();
   const speed = resolveDeepgramTtsSpeed();
   const totalStarted = Date.now();
+  const chunks = splitSpokenForPauses(text);
+  const pauseMs = resolveStructurePauseMs();
 
   console.log(
-    `[voice-cursor] deepgram-tts-ws pcm-stream chars=${text.length} voice=${voice} speed=${speed} sampleRate=${FLUX_TTS_SAMPLE_RATE}`,
+    `[voice-cursor] deepgram-tts-ws pcm-stream chunks=${chunks.length} chars=${text.length} voice=${voice} speed=${speed} pauseMs=${pauseMs} sampleRate=${FLUX_TTS_SAMPLE_RATE}`,
   );
 
   const session = await ensureFluxSession();
   const player = await startPcmPlaySession({ sampleRate: FLUX_TTS_SAMPLE_RATE });
   let audioBytes = 0;
+  let firstByteMs: number | undefined;
 
   try {
-    const turn = await session.speakTurn(text, (pcm) => {
-      audioBytes += pcm.length;
-      player.write(pcm);
-    });
+    for (let i = 0; i < chunks.length; i++) {
+      if (i > 0 && pauseMs > 0) {
+        const silence = silencePcm(FLUX_TTS_SAMPLE_RATE, pauseMs);
+        audioBytes += silence.length;
+        player.write(silence);
+      }
+      const turn = await session.speakTurn(chunks[i], (pcm) => {
+        audioBytes += pcm.length;
+        player.write(pcm);
+      });
+      if (firstByteMs === undefined && turn.firstByteMs !== undefined) {
+        firstByteMs = turn.firstByteMs;
+      }
+      if (!turn.audioBytes && chunks[i].length > 0) {
+        console.warn(
+          `[voice-cursor] deepgram-tts-ws chunk=${i} produced no audio chars=${chunks[i].length}`,
+        );
+      }
+    }
+
     const play = await player.end();
 
-    if (!audioBytes && !turn.audioBytes) {
+    if (!audioBytes) {
       throw new Error("Flux TTS produced no audio");
     }
 
-    // play.firstMs is measured from waveOut session start (≈ this function's start).
     const firstAudioMs =
       play.firstMs !== undefined && play.firstMs >= 0
         ? play.firstMs
-        : turn.firstByteMs;
+        : firstByteMs;
 
     const totalMs = Date.now() - totalStarted;
     console.log(
-      `[voice-cursor] deepgram-tts-ws pcm-stream totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} firstByteMs=${turn.firstByteMs ?? "n/a"} play=${play.detail} audioBytes=${turn.audioBytes}`,
+      `[voice-cursor] deepgram-tts-ws pcm-stream totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} firstByteMs=${firstByteMs ?? "n/a"} play=${play.detail} audioBytes=${audioBytes} chunks=${chunks.length}`,
     );
     return {
       engine: "deepgram-tts-ws",
@@ -1361,7 +1380,21 @@ async function speakWithDeepgramFluxPcmStream(text: string): Promise<{
   }
 }
 
-/** Fallback path: one sentence per Flux turn, play each as a single WAV via MCI. */
+function resolveStructurePauseMs(): number {
+  const raw = process.env.VOICE_CURSOR_STRUCTURE_PAUSE_MS?.trim();
+  const n = raw ? Number(raw) : 550;
+  if (!Number.isFinite(n)) return 550;
+  // Clamp: noticeable paragraph beat without feeling stuck.
+  return Math.min(1500, Math.max(0, Math.round(n)));
+}
+
+function silencePcm(sampleRate: number, ms: number): Buffer {
+  const frames = Math.max(0, Math.floor((sampleRate * ms) / 1000));
+  // mono linear16
+  return Buffer.alloc(frames * 2);
+}
+
+/** Fallback path: structure chunks as WAVs, with silence between paragraphs/lists. */
 async function speakWithDeepgramFluxSentenceWavs(text: string): Promise<{
   engine: string;
   voice: string;
@@ -1372,16 +1405,17 @@ async function speakWithDeepgramFluxSentenceWavs(text: string): Promise<{
   const speed = resolveDeepgramTtsSpeed();
   const totalStarted = Date.now();
   let firstAudioMs: number | undefined;
-  const sentences = sentencesForFluxTts(text);
+  const structureChunks = splitSpokenForPauses(text);
+  const pauseMs = resolveStructurePauseMs();
 
   console.log(
-    `[voice-cursor] deepgram-tts-ws sentence-wavs sentences=${sentences.length} chars=${text.length} voice=${voice} speed=${speed}`,
+    `[voice-cursor] deepgram-tts-ws sentence-wavs structureChunks=${structureChunks.length} chars=${text.length} voice=${voice} speed=${speed} pauseMs=${pauseMs}`,
   );
 
   const session = await ensureFluxSession();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-dg-ws-"));
 
-  const synthSentence = async (
+  const synthChunk = async (
     sentence: string,
     index: number,
   ): Promise<{ wavPath: string; pcmBytes: number }> => {
@@ -1392,32 +1426,38 @@ async function speakWithDeepgramFluxSentenceWavs(text: string): Promise<{
     });
     const pcmBuf = Buffer.concat(parts);
     if (pcmBuf.length < 2) {
-      throw new Error(`Flux TTS sentence ${index} produced no audio`);
+      throw new Error(`Flux TTS chunk ${index} produced no audio`);
     }
-    const wavPath = path.join(tmpDir, `sentence-${index}.wav`);
+    const wavPath = path.join(tmpDir, `chunk-${index}.wav`);
     writePcmWavFile(wavPath, pcmBuf);
     console.log(
-      `[voice-cursor] deepgram-tts-ws sentence=${index} chars=${sentence.length} pcmBytes=${pcmBuf.length} firstByteMs=${turn.firstByteMs ?? "n/a"} synthMs=${Date.now() - synthStarted}`,
+      `[voice-cursor] deepgram-tts-ws chunk=${index} chars=${sentence.length} pcmBytes=${pcmBuf.length} firstByteMs=${turn.firstByteMs ?? "n/a"} synthMs=${Date.now() - synthStarted}`,
     );
     return { wavPath, pcmBytes: pcmBuf.length };
   };
 
   try {
-    let nextFile =
-      sentences.length > 0 ? synthSentence(sentences[0], 0) : null;
+    // Flatten structure chunks; insert a silence WAV between them.
+    const playList: Array<{ wavPath: string; pcmBytes: number }> = [];
+    for (let i = 0; i < structureChunks.length; i++) {
+      if (i > 0 && pauseMs > 0) {
+        const silencePath = path.join(tmpDir, `silence-${i}.wav`);
+        writePcmWavFile(silencePath, silencePcm(FLUX_TTS_SAMPLE_RATE, pauseMs));
+        playList.push({ wavPath: silencePath, pcmBytes: 0 });
+      }
+      // Further sentence-split only within a structure chunk if huge.
+      const pieces = sentencesForFluxTts(structureChunks[i]);
+      for (let j = 0; j < pieces.length; j++) {
+        playList.push(await synthChunk(pieces[j], playList.length));
+      }
+    }
+
     let played = 0;
-
-    for (let i = 0; i < sentences.length; i++) {
-      const audio = await nextFile!;
-      nextFile =
-        i + 1 < sentences.length
-          ? synthSentence(sentences[i + 1], i + 1)
-          : null;
-
-      if (firstAudioMs === undefined) {
+    for (const audio of playList) {
+      if (firstAudioMs === undefined && audio.pcmBytes > 0) {
         firstAudioMs = Date.now() - totalStarted;
         console.log(
-          `[voice-cursor] deepgram-tts-ws firstAudioMs=${firstAudioMs} sentence=${i} bytes=${audio.pcmBytes}`,
+          `[voice-cursor] deepgram-tts-ws firstAudioMs=${firstAudioMs} bytes=${audio.pcmBytes}`,
         );
       }
       await playAudioFile(audio.wavPath);
@@ -1433,7 +1473,7 @@ async function speakWithDeepgramFluxSentenceWavs(text: string): Promise<{
 
     const totalMs = Date.now() - totalStarted;
     console.log(
-      `[voice-cursor] deepgram-tts-ws sentence-wavs totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} sentences=${played}`,
+      `[voice-cursor] deepgram-tts-ws sentence-wavs totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} clips=${played}`,
     );
     return { engine: "deepgram-tts-ws", voice, firstAudioMs, totalMs };
   } finally {
@@ -1455,9 +1495,11 @@ async function speakWithDeepgramRest(text: string): Promise<{
   const speed = resolveDeepgramTtsSpeed();
   const totalStarted = Date.now();
   let firstAudioMs: number | undefined;
-  const chunks = chunkForTts(text);
+  // REST path can't insert PCM silence — drop structure markers to plain prose.
+  const plain = splitSpokenForPauses(text).join(" ");
+  const chunks = chunkForTts(plain);
   console.log(
-    `[voice-cursor] deepgram-tts-rest speak chunks=${chunks.length} chars=${text.length} voice=${voice} speed=${speed}`,
+    `[voice-cursor] deepgram-tts-rest speak chunks=${chunks.length} chars=${plain.length} voice=${voice} speed=${speed}`,
   );
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-dg-tts-"));
@@ -1548,42 +1590,47 @@ async function speakWithEdge(text: string): Promise<{
   const prosody = new ProsodyOptions();
   prosody.rate = rate;
 
-  const chunks = chunkForTts(text);
+  const structureChunks = splitSpokenForPauses(text);
+  const pauseMs = resolveStructurePauseMs();
   console.log(
-    `[voice-cursor] edge-tts speak chunks=${chunks.length} chars=${text.length} rate=${rate}`,
+    `[voice-cursor] edge-tts speak structureChunks=${structureChunks.length} chars=${text.length} rate=${rate} pauseMs=${pauseMs}`,
   );
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-tts-"));
   try {
-    const synthChunk = async (chunk: string, index: number): Promise<string> => {
-      const synthStarted = Date.now();
-      const { audioFilePath } = await tts.toFile(tmpDir, escapeXml(chunk), prosody);
-      if (!fs.existsSync(audioFilePath)) {
-        throw new Error(`Edge TTS did not write audio file for voice=${voice}`);
+    for (let s = 0; s < structureChunks.length; s++) {
+      if (s > 0 && pauseMs > 0) {
+        await delay(pauseMs);
       }
-      const bytes = fs.statSync(audioFilePath).size;
-      console.log(
-        `[voice-cursor] edge-tts chunk=${index} bytes=${bytes} voice=${voice} rate=${rate} synthMs=${Date.now() - synthStarted}`,
-      );
-      return audioFilePath;
-    };
+      const chunks = chunkForTts(structureChunks[s]);
+      const synthChunk = async (chunk: string, index: number): Promise<string> => {
+        const synthStarted = Date.now();
+        const { audioFilePath } = await tts.toFile(tmpDir, escapeXml(chunk), prosody);
+        if (!fs.existsSync(audioFilePath)) {
+          throw new Error(`Edge TTS did not write audio file for voice=${voice}`);
+        }
+        const bytes = fs.statSync(audioFilePath).size;
+        console.log(
+          `[voice-cursor] edge-tts chunk=${s}.${index} bytes=${bytes} voice=${voice} rate=${rate} synthMs=${Date.now() - synthStarted}`,
+        );
+        return audioFilePath;
+      };
 
-    // Pipeline: synthesize N+1 while playing N so first audio starts ASAP
-    // and gaps between sentences stay small.
-    let nextFile = chunks.length > 0 ? synthChunk(chunks[0], 0) : null;
-    for (let i = 0; i < chunks.length; i++) {
-      const audioFilePath = await nextFile!;
-      nextFile =
-        i + 1 < chunks.length ? synthChunk(chunks[i + 1], i + 1) : null;
-      if (firstAudioMs === undefined) {
-        firstAudioMs = Date.now() - totalStarted;
-        console.log(`[voice-cursor] edge-tts firstAudioMs=${firstAudioMs}`);
-      }
-      await playAudioFile(audioFilePath);
-      try {
-        fs.unlinkSync(audioFilePath);
-      } catch {
-        // ignore
+      let nextFile = chunks.length > 0 ? synthChunk(chunks[0], 0) : null;
+      for (let i = 0; i < chunks.length; i++) {
+        const audioFilePath = await nextFile!;
+        nextFile =
+          i + 1 < chunks.length ? synthChunk(chunks[i + 1], i + 1) : null;
+        if (firstAudioMs === undefined) {
+          firstAudioMs = Date.now() - totalStarted;
+          console.log(`[voice-cursor] edge-tts firstAudioMs=${firstAudioMs}`);
+        }
+        await playAudioFile(audioFilePath);
+        try {
+          fs.unlinkSync(audioFilePath);
+        } catch {
+          // ignore
+        }
       }
     }
   } finally {
@@ -1599,6 +1646,10 @@ async function speakWithEdge(text: string): Promise<{
     `[voice-cursor] edge-tts totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"}`,
   );
   return { engine: "edge-tts", voice, firstAudioMs, totalMs };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function speakWithWindowsSapi(text: string): Promise<{
