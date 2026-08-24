@@ -5,7 +5,7 @@ import { injectPrompt, type InjectionStrategy } from "./inject";
 import { inventoryAgentCommands, writeInventoryMarkdown } from "./inventory";
 import { diagnoseCapture } from "./diagnose";
 import { waitForCapturedMarker } from "./proveSubmit";
-import { runOneShotTalk } from "./oneShot";
+import { runOneShotTalk, startPushToTalk, stopPushToTalkAndSend } from "./oneShot";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
@@ -23,8 +23,8 @@ export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel(OUTPUT_CHANNEL);
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.text = "$(unmute) Voice Cursor: idle";
-  status.tooltip = "Voice Cursor: One-Shot Talk";
-  status.command = "voiceCursor.oneShotTalk";
+  status.tooltip = "Voice Cursor: Start Listening";
+  status.command = "voiceCursor.startListening";
   status.show();
 
   context.subscriptions.push(output, status);
@@ -200,7 +200,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.oneShotTalk", async () => {
       if (oneShotRunning) {
-        vscode.window.showWarningMessage("Voice Cursor: one-shot already running");
+        vscode.window.showWarningMessage("Voice Cursor: already busy");
         return;
       }
       oneShotRunning = true;
@@ -227,11 +227,79 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand("voiceCursor.startListening", async () => {
+      if (oneShotRunning) {
+        vscode.window.showWarningMessage("Voice Cursor: already busy");
+        return;
+      }
+      output.show(true);
+      const ok = await startPushToTalk({
+        serviceBase: serviceBase(),
+        log: (msg) => output.appendLine(msg),
+        setStatus,
+      });
+      if (ok) {
+        status.command = "voiceCursor.stopListeningAndSend";
+        status.tooltip = "Click to stop listening and send";
+        status.text = "$(mic) Voice Cursor: listening (click to send)";
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("voiceCursor.stopListeningAndSend", async () => {
+      if (oneShotRunning) {
+        vscode.window.showWarningMessage("Voice Cursor: already sending");
+        return;
+      }
+      oneShotRunning = true;
+      output.show(true);
+      try {
+        const newChat = vscode.workspace
+          .getConfiguration("voiceCursor")
+          .get<boolean>("oneShotNewChat", true);
+        const confirmTranscript = vscode.workspace
+          .getConfiguration("voiceCursor")
+          .get<boolean>("confirmTranscript", true);
+        await stopPushToTalkAndSend({
+          serviceBase: serviceBase(),
+          extensionPath,
+          newChat,
+          submitCandidates: getSubmitCandidates(),
+          confirmTranscript,
+          log: (msg) => output.appendLine(msg),
+          setStatus,
+        });
+      } finally {
+        oneShotRunning = false;
+        status.command = "voiceCursor.startListening";
+        status.tooltip = "Voice Cursor: Start Listening";
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("voiceCursor.cancelListening", async () => {
+      try {
+        await postJson("/stt/cancel", {});
+      } catch {
+        // ignore
+      }
+      oneShotRunning = false;
+      setStatus("idle", "cancelled");
+      status.command = "voiceCursor.startListening";
+      status.tooltip = "Voice Cursor: Start Listening";
+      vscode.window.showInformationMessage("Voice Cursor: listening cancelled");
+    }),
+  );
+
   connectSocket();
-  output.appendLine("Voice Cursor activated (Phase 2 one-shot).");
+  output.appendLine("Voice Cursor activated (push-to-talk).");
   output.appendLine("1) Start service: npm run service");
-  output.appendLine("2) Run: Voice Cursor: One-Shot Talk");
-  output.appendLine("   (or click the Voice Cursor status bar item)");
+  output.appendLine("2) Voice Cursor: Start Listening");
+  output.appendLine("3) Voice Cursor: Stop Listening & Send");
+  output.appendLine("   (status bar toggles start → stop/send)");
 }
 
 export function deactivate(): void {

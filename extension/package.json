@@ -46,6 +46,18 @@
       {
         "command": "voiceCursor.oneShotTalk",
         "title": "Voice Cursor: One-Shot Talk"
+      },
+      {
+        "command": "voiceCursor.startListening",
+        "title": "Voice Cursor: Start Listening"
+      },
+      {
+        "command": "voiceCursor.stopListeningAndSend",
+        "title": "Voice Cursor: Stop Listening & Send"
+      },
+      {
+        "command": "voiceCursor.cancelListening",
+        "title": "Voice Cursor: Cancel Listening"
       }
     ],
     "configuration": {
@@ -67,6 +79,11 @@
           "type": "boolean",
           "default": true,
           "description": "If true, One-Shot Talk opens a new Agent chat each turn"
+        },
+        "voiceCursor.confirmTranscript": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before sending a transcript to the Agent"
         },
         "voiceCursor.injectionStrategy": {
           "type": "string",

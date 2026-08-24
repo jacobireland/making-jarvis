@@ -23,8 +23,9 @@ npm run service
 In Cursor (open the repo folder that contains `.cursor/hooks.json`):
 
 1. **Developer: Install Extension from Location…** → select `extension/`
-2. Command Palette → **Voice Cursor: One-Shot Talk**
-3. Speak when prompted, confirm transcript, wait for spoken reply
+2. Command Palette → **Voice Cursor: Start Listening**
+3. Speak, then **Voice Cursor: Stop Listening & Send**
+4. Confirm transcript if prompted, wait for spoken reply
 
 Details: [docs/phase2-oneshot.md](docs/phase2-oneshot.md) · Phase 1 checklist: [docs/spike-phase1.md](docs/spike-phase1.md)
 

@@ -8,11 +8,21 @@ import {
   type VoiceCursorEvent,
   type VoiceCursorState,
 } from "@voice-cursor/shared";
-import { listenOnce, speakText, describeSttConfig, describeTtsConfig, warmTts } from "./speech";
+import {
+  listenOnce,
+  speakText,
+  describeSttConfig,
+  describeTtsConfig,
+  warmTts,
+  startMicSession,
+  stopMicSessionAndTranscribe,
+  cancelMicSession,
+  getMicSessionStatus,
+} from "./speech";
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.2.3";
+const VERSION = "0.3.0";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
@@ -229,6 +239,59 @@ const server = http.createServer(async (req, res) => {
       } finally {
         speechBusy = false;
       }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/stt/status") {
+      json(res, 200, { ok: true, ...getMicSessionStatus(), speechBusy });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/stt/start") {
+      if (speechBusy) {
+        json(res, 409, { ok: false, error: "speech pipeline busy" });
+        return;
+      }
+      const body = (await readJson(req)) as Record<string, unknown>;
+      const maxSeconds = typeof body.maxSeconds === "number" ? body.maxSeconds : 120;
+      speechBusy = true;
+      try {
+        const started = await startMicSession({ maxSeconds });
+        setState("listening", `push-to-talk ${started.id}`);
+        json(res, 200, { ok: true, ...started });
+      } catch (error) {
+        speechBusy = false;
+        setState("error", error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/stt/stop") {
+      setState("transcribing", "stopping mic");
+      try {
+        const result = await stopMicSessionAndTranscribe();
+        pushEvent({
+          type: "utterance",
+          text: result.text,
+          receivedAt: new Date().toISOString(),
+        });
+        setState(result.text ? "idle" : "error", result.text ? "stt ok" : "empty transcript");
+        json(res, 200, { ok: true, ...result });
+      } catch (error) {
+        setState("error", error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        speechBusy = false;
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/stt/cancel") {
+      await cancelMicSession();
+      speechBusy = false;
+      setState("idle", "listening cancelled");
+      json(res, 200, { ok: true });
       return;
     }
 

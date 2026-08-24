@@ -2,54 +2,81 @@ import * as vscode from "vscode";
 import { injectPrompt } from "./inject";
 import { waitForNextAgentResponse } from "./proveSubmit";
 
-export async function runOneShotTalk(options: {
+export async function startPushToTalk(options: {
+  serviceBase: string;
+  log: (message: string) => void;
+  setStatus: (state: string, detail?: string) => void;
+}): Promise<boolean> {
+  const base = options.serviceBase.replace(/\/$/, "");
+  options.setStatus("listening", "push-to-talk");
+  options.log("[ptt] starting mic");
+  try {
+    const res = await fetch(`${base}/stt/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ maxSeconds: 120 }),
+    });
+    const body = (await res.json()) as { ok?: boolean; error?: string; id?: string };
+    if (!res.ok || !body.ok) {
+      throw new Error(body.error ?? `STT start HTTP ${res.status}`);
+    }
+    options.log(`[ptt] listening id=${body.id}`);
+    vscode.window.showInformationMessage(
+      "Voice Cursor: listening… run “Stop Listening & Send” when done.",
+    );
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    options.setStatus("error", message);
+    vscode.window.showErrorMessage(`Voice Cursor failed to start listening: ${message}`);
+    return false;
+  }
+}
+
+export async function stopPushToTalkAndSend(options: {
   serviceBase: string;
   extensionPath: string;
-  listenSeconds: number;
   newChat: boolean;
   submitCandidates: string[];
+  confirmTranscript: boolean;
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
 }): Promise<void> {
   const {
     serviceBase,
     extensionPath,
-    listenSeconds,
     newChat,
     submitCandidates,
+    confirmTranscript,
     log,
     setStatus,
   } = options;
   const base = serviceBase.replace(/\/$/, "");
 
-  const go = await vscode.window.showInformationMessage(
-    `Voice Cursor: speak after OK. Listening ~${listenSeconds}s. Don't click away while sending.`,
-    "OK — Start Listening",
-    "Cancel",
-  );
-  if (go !== "OK — Start Listening") return;
-
-  setStatus("listening", `~${listenSeconds}s`);
-  log(`[oneshot] listening seconds=${listenSeconds}`);
+  setStatus("transcribing", "stopping mic");
+  log("[ptt] stopping mic + transcribing");
 
   let transcript = "";
   try {
-    const sttRes = await fetch(`${base}/stt/listen`, {
+    const res = await fetch(`${base}/stt/stop`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seconds: listenSeconds }),
+      body: JSON.stringify({}),
     });
-    const sttBody = (await sttRes.json()) as {
+    const body = (await res.json()) as {
       ok?: boolean;
       text?: string;
       engine?: string;
       error?: string;
+      durationMs?: number;
     };
-    if (!sttRes.ok || !sttBody.ok) {
-      throw new Error(sttBody.error ?? `STT HTTP ${sttRes.status}`);
+    if (!res.ok || !body.ok) {
+      throw new Error(body.error ?? `STT stop HTTP ${res.status}`);
     }
-    transcript = (sttBody.text ?? "").trim();
-    log(`[oneshot] stt engine=${sttBody.engine} text=${transcript || "(empty)"}`);
+    transcript = (body.text ?? "").trim();
+    log(
+      `[ptt] stt engine=${body.engine} durationMs=${body.durationMs} text=${transcript || "(empty)"}`,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus("error", message);
@@ -63,14 +90,16 @@ export async function runOneShotTalk(options: {
     return;
   }
 
-  const use = await vscode.window.showInformationMessage(
-    `Send to Agent: “${transcript.slice(0, 180)}${transcript.length > 180 ? "…" : ""}”?`,
-    "Send",
-    "Cancel",
-  );
-  if (use !== "Send") {
-    setStatus("idle", "cancelled");
-    return;
+  if (confirmTranscript) {
+    const use = await vscode.window.showInformationMessage(
+      `Send to Agent: “${transcript.slice(0, 180)}${transcript.length > 180 ? "…" : ""}”?`,
+      "Send",
+      "Cancel",
+    );
+    if (use !== "Send") {
+      setStatus("idle", "cancelled");
+      return;
+    }
   }
 
   const sinceIso = new Date().toISOString();
@@ -85,11 +114,11 @@ export async function runOneShotTalk(options: {
     const injectResult = await injectPrompt(transcript, {
       strategy: "auto",
       submitCandidates,
-      log: (msg) => log(`[oneshot/inject] ${msg}`),
+      log: (msg) => log(`[ptt/inject] ${msg}`),
       newChat,
       extensionPath,
     });
-    log(`[oneshot] inject=${JSON.stringify(injectResult)}`);
+    log(`[ptt] inject=${JSON.stringify(injectResult)}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus("error", message);
@@ -111,7 +140,7 @@ export async function runOneShotTalk(options: {
     return;
   }
 
-  log(`[oneshot] captured spoken=${captured.spokenText}`);
+  log(`[ptt] captured spoken=${captured.spokenText}`);
   setStatus("speaking", captured.spokenText.slice(0, 60));
 
   try {
@@ -124,9 +153,9 @@ export async function runOneShotTalk(options: {
     if (!ttsRes.ok || !ttsBody.ok) {
       throw new Error(ttsBody.error ?? `TTS HTTP ${ttsRes.status}`);
     }
-    log(`[oneshot] tts engine=${ttsBody.engine}`);
-    setStatus("idle", "oneshot complete");
-    vscode.window.showInformationMessage("Voice Cursor: one-shot complete.");
+    log(`[ptt] tts engine=${ttsBody.engine}`);
+    setStatus("idle", "done");
+    vscode.window.showInformationMessage("Voice Cursor: done.");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus("error", message);
@@ -134,4 +163,47 @@ export async function runOneShotTalk(options: {
       `Voice Cursor captured reply but TTS failed: ${message}. Reply: ${captured.spokenText}`,
     );
   }
+}
+
+/** @deprecated kept for compatibility — prefer start/stop push-to-talk */
+export async function runOneShotTalk(options: {
+  serviceBase: string;
+  extensionPath: string;
+  listenSeconds: number;
+  newChat: boolean;
+  submitCandidates: string[];
+  log: (message: string) => void;
+  setStatus: (state: string, detail?: string) => void;
+}): Promise<void> {
+  const started = await startPushToTalk({
+    serviceBase: options.serviceBase,
+    log: options.log,
+    setStatus: options.setStatus,
+  });
+  if (!started) return;
+
+  const pick = await vscode.window.showInformationMessage(
+    "Listening… click Stop when finished speaking.",
+    "Stop Listening & Send",
+    "Cancel",
+  );
+  if (pick !== "Stop Listening & Send") {
+    await fetch(`${options.serviceBase.replace(/\/$/, "")}/stt/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }).catch(() => undefined);
+    options.setStatus("idle", "cancelled");
+    return;
+  }
+
+  await stopPushToTalkAndSend({
+    serviceBase: options.serviceBase,
+    extensionPath: options.extensionPath,
+    newChat: options.newChat,
+    submitCandidates: options.submitCandidates,
+    confirmTranscript: true,
+    log: options.log,
+    setStatus: options.setStatus,
+  });
 }

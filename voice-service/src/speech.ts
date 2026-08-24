@@ -106,6 +106,197 @@ export async function listenOnce(options: {
   return { text, engine: "windows-system-speech" };
 }
 
+type MicSession = {
+  id: string;
+  wavPath: string;
+  stopPath: string;
+  child: ReturnType<typeof import("node:child_process").spawn>;
+  startedAt: string;
+};
+
+let micSession: MicSession | null = null;
+
+export function getMicSessionStatus(): {
+  listening: boolean;
+  id?: string;
+  startedAt?: string;
+} {
+  if (!micSession) return { listening: false };
+  return {
+    listening: true,
+    id: micSession.id,
+    startedAt: micSession.startedAt,
+  };
+}
+
+export async function startMicSession(options?: {
+  maxSeconds?: number;
+}): Promise<{ id: string; startedAt: string }> {
+  if (process.platform !== "win32") {
+    throw new Error("Push-to-talk mic recording is Windows-only for now");
+  }
+  if (micSession) {
+    throw new Error("Already listening — stop the current session first");
+  }
+
+  const script = resolveRepoScript("record-until-stop-windows.ps1");
+  if (!script) throw new Error("scripts/record-until-stop-windows.ps1 not found");
+
+  const id = `mic-${Date.now()}`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-mic-"));
+  const wavPath = path.join(dir, "clip.wav");
+  const stopPath = path.join(dir, "stop.flag");
+  const maxSeconds = options?.maxSeconds ?? 120;
+  const startedAt = new Date().toISOString();
+
+  const { spawn } = await import("node:child_process");
+  const child = spawn(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-OutFile",
+      wavPath,
+      "-StopFile",
+      stopPath,
+      "-MaxSeconds",
+      String(maxSeconds),
+    ],
+    {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  micSession = { id, wavPath, stopPath, child, startedAt };
+
+  child.on("exit", () => {
+    // Session cleared on stop; if process dies early, mark inactive.
+    if (micSession?.id === id) {
+      // keep paths so stop can still try to read wav if process exited after save
+    }
+  });
+
+  // Give MCI a moment to start recording.
+  await new Promise((r) => setTimeout(r, 400));
+  if (child.exitCode !== null) {
+    micSession = null;
+    throw new Error("Mic recorder exited immediately — check microphone permissions");
+  }
+
+  return { id, startedAt };
+}
+
+async function transcribeWav(wavPath: string): Promise<string> {
+  const script = resolveRepoScript("stt-wav-windows.ps1");
+  if (!script) throw new Error("scripts/stt-wav-windows.ps1 not found");
+  const { stdout, stderr } = await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-WavFile",
+      wavPath,
+    ],
+    {
+      windowsHide: true,
+      timeout: 120_000,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  const text = String(stdout ?? "").trim();
+  if (!text && stderr?.trim()) throw new Error(stderr.trim());
+  return text;
+}
+
+export async function stopMicSessionAndTranscribe(): Promise<{
+  text: string;
+  engine: string;
+  id: string;
+  durationMs: number;
+}> {
+  if (!micSession) {
+    throw new Error("Not listening — start listening first");
+  }
+
+  const session = micSession;
+  const started = Date.parse(session.startedAt);
+  fs.writeFileSync(session.stopPath, "stop\n", "utf8");
+
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(() => resolve(), 15_000);
+    session.child.once("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+
+  // Ensure process is gone.
+  try {
+    session.child.kill();
+  } catch {
+    // ignore
+  }
+
+  micSession = null;
+
+  if (!fs.existsSync(session.wavPath)) {
+    throw new Error("Recording stopped but WAV was not created");
+  }
+  const bytes = fs.statSync(session.wavPath).size;
+  if (bytes < 1000) {
+    try {
+      fs.rmSync(path.dirname(session.wavPath), { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+    throw new Error(`Recording too short/empty (${bytes} bytes)`);
+  }
+
+  try {
+    const text = await transcribeWav(session.wavPath);
+    return {
+      text,
+      engine: "windows-system-speech-wav",
+      id: session.id,
+      durationMs: Date.now() - started,
+    };
+  } finally {
+    try {
+      fs.rmSync(path.dirname(session.wavPath), { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export async function cancelMicSession(): Promise<void> {
+  if (!micSession) return;
+  const session = micSession;
+  try {
+    fs.writeFileSync(session.stopPath, "stop\n", "utf8");
+  } catch {
+    // ignore
+  }
+  try {
+    session.child.kill();
+  } catch {
+    // ignore
+  }
+  micSession = null;
+  try {
+    fs.rmSync(path.dirname(session.wavPath), { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+}
+
 async function playAudioFile(filePath: string): Promise<void> {
   const stat = fs.statSync(filePath);
   if (stat.size < 500) {
