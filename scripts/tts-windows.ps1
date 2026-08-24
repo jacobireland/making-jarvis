@@ -17,7 +17,8 @@ if ([string]::IsNullOrWhiteSpace($Text)) {
 Add-Type -AssemblyName System.Speech
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
 try {
-  $synth.Rate = 1
+  # -10..10; 3 ≈ noticeably faster cadence for agent replies
+  $synth.Rate = 3
   $synth.Volume = 100
   $synth.Speak($Text)
   Write-Output "ok"

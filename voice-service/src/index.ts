@@ -361,6 +361,8 @@ server.listen(PORT, HOST, () => {
   console.log(
     `[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved} openai=${stt.hasOpenAI}`,
   );
-  console.log(`[voice-cursor] TTS engine=${tts.engine} voice=${tts.voice}`);
+  console.log(
+    `[voice-cursor] TTS engine=${tts.engine} voice=${tts.voice} rate=${tts.rate}`,
+  );
   void warmTts();
 });

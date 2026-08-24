@@ -3,11 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
+import { MsEdgeTTS, OUTPUT_FORMAT, ProsodyOptions } from "msedge-tts";
 
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_EDGE_VOICE = "en-PH-JamesNeural";
+/** Default ~25% faster than Edge's natural rate — snappier agent replies. */
+const DEFAULT_EDGE_RATE = 1.25;
 
 export function resolveRepoScript(name: string): string | undefined {
   const candidates = [
@@ -73,13 +75,25 @@ export function describeSttConfig(): {
   return { engine: preferred, resolved, hasOpenAI };
 }
 
+function resolveTtsRate(): number | string {
+  const raw = (process.env.VOICE_CURSOR_TTS_RATE ?? String(DEFAULT_EDGE_RATE)).trim();
+  if (!raw) return DEFAULT_EDGE_RATE;
+  // Allow SSML relative forms: "+20%", "fast", "1.25"
+  if (/^[a-z-]+$/i.test(raw) || raw.includes("%")) return raw;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_EDGE_RATE;
+  // Clamp to a usable speaking range.
+  return Math.min(2, Math.max(0.5, n));
+}
+
 export function describeTtsConfig(): {
   engine: string;
   voice: string;
+  rate: number | string;
 } {
   const engine = (process.env.VOICE_CURSOR_TTS ?? "edge").toLowerCase();
   const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
-  return { engine, voice };
+  return { engine, voice, rate: resolveTtsRate() };
 }
 
 function escapeXml(text: string): string {
@@ -589,22 +603,25 @@ export async function warmTts(): Promise<void> {
 
 async function speakWithEdge(text: string): Promise<{ engine: string; voice: string }> {
   const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
+  const rate = resolveTtsRate();
   const totalStarted = Date.now();
   const tts = await getEdgeClient(voice);
+  const prosody = new ProsodyOptions();
+  prosody.rate = rate;
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-tts-"));
   try {
     for (const chunk of chunkForTts(text)) {
       const synthStarted = Date.now();
       // msedge-tts injects this string into SSML — escape XML specials.
-      const { audioFilePath } = await tts.toFile(tmpDir, escapeXml(chunk));
+      const { audioFilePath } = await tts.toFile(tmpDir, escapeXml(chunk), prosody);
       const synthMs = Date.now() - synthStarted;
       if (!fs.existsSync(audioFilePath)) {
         throw new Error(`Edge TTS did not write audio file for voice=${voice}`);
       }
       const bytes = fs.statSync(audioFilePath).size;
       console.log(
-        `[voice-cursor] edge-tts wrote ${audioFilePath} (${bytes} bytes) voice=${voice} synthMs=${synthMs}`,
+        `[voice-cursor] edge-tts wrote ${audioFilePath} (${bytes} bytes) voice=${voice} rate=${rate} synthMs=${synthMs}`,
       );
       await playAudioFile(audioFilePath);
       try {
