@@ -12,6 +12,8 @@ export type InjectionStrategy =
   | "composer.newAgentChat+paste"
   | "clipboard-only";
 
+export type SubmitChord = "enter" | "ctrl-enter" | "both";
+
 export type InjectResult = {
   usedStrategy: string;
   submitted: boolean;
@@ -19,6 +21,7 @@ export type InjectResult = {
   triedSubmitCommands: string[];
   openedWith?: string;
   details: string[];
+  timingMs?: Record<string, number>;
 };
 
 /**
@@ -36,16 +39,26 @@ export async function injectPrompt(
     log: (message: string) => void;
     newChat?: boolean;
     extensionPath?: string;
+    /** Which key to send after paste. Default enter (fastest). */
+    submitChord?: SubmitChord;
   },
 ): Promise<InjectResult> {
   const { strategy, log } = options;
   const newChat = options.newChat ?? true;
+  const submitChord: SubmitChord = options.submitChord ?? "enter";
   const details: string[] = [];
+  const t0 = Date.now();
+  const mark = (label: string) => {
+    const ms = Date.now() - t0;
+    log(`t+${ms}ms ${label}`);
+    return ms;
+  };
+  const timingMs: Record<string, number> = {};
   const previousClipboard = await vscode.env.clipboard.readText();
 
   try {
     await vscode.env.clipboard.writeText(prompt);
-    log("clipboard written");
+    timingMs.clipboard = mark("clipboard written");
 
     if (strategy === "clipboard-only") {
       return {
@@ -53,6 +66,7 @@ export async function injectPrompt(
         submitted: false,
         triedSubmitCommands: [],
         details,
+        timingMs,
       };
     }
 
@@ -74,19 +88,21 @@ export async function injectPrompt(
           submitted: false,
           triedSubmitCommands: [],
           details,
+          timingMs,
         };
       }
-      await delay(350);
+      await delay(120);
     } else {
       openedWith = "current-chat";
     }
+    timingMs.chatReady = mark(`chat ready (${openedWith})`);
 
     await tryCommand("composer.focusComposer", log);
-    await delay(200);
+    await delay(60);
 
     await vscode.commands.executeCommand("editor.action.clipboardPasteAction");
-    log(`pasted after ${openedWith}`);
-    await delay(300);
+    timingMs.pasted = mark(`pasted after ${openedWith}`);
+    await delay(100);
 
     const shouldSubmit =
       strategy === "auto" || strategy === "composer.newAgentChat+paste+submit";
@@ -100,34 +116,36 @@ export async function injectPrompt(
       // close/reopen panels (e.g. startComposerPrompt).
 
       await tryCommand("composer.focusComposer", log);
-      await delay(200);
+      await delay(60);
 
-      const enter = await sendEnterToCursor("enter", options.extensionPath, log);
-      details.push(`os-enter: ${enter.detail}`);
-      if (enter.ok) {
-        submitted = true;
-        submitMethod = "os-enter";
-        log("sent focus-safe OS Enter");
-      }
+      const chords: Array<"enter" | "ctrl-enter"> =
+        submitChord === "both"
+          ? ["enter", "ctrl-enter"]
+          : submitChord === "ctrl-enter"
+            ? ["ctrl-enter"]
+            : ["enter"];
 
-      // Fallback: some keymaps use Ctrl+Enter to send.
-      const ctrl = await sendEnterToCursor("ctrl-enter", options.extensionPath, log);
-      details.push(`os-ctrl-enter: ${ctrl.detail}`);
-      if (ctrl.ok) {
-        submitted = true;
-        if (!submitMethod) submitMethod = "os-ctrl-enter";
-        log("sent focus-safe OS Ctrl+Enter");
+      for (const chord of chords) {
+        const result = await sendEnterToCursor(chord, options.extensionPath, log);
+        details.push(`os-${chord}: ${result.detail}`);
+        if (result.ok) {
+          submitted = true;
+          if (!submitMethod) submitMethod = `os-${chord}`;
+          log(`sent focus-safe OS ${chord}`);
+        }
       }
+      timingMs.submitted = mark(`submit done method=${submitMethod ?? "none"}`);
 
       // Record whether known submit command IDs even exist (informational only).
+      const available = await vscode.commands.getCommands(true);
+      const availableSet = new Set(available);
       for (const commandId of [
         "composer.startGeneration",
         ...options.submitCandidates,
         "workbench.action.chat.submit",
       ]) {
         triedSubmitCommands.push(commandId);
-        const available = await vscode.commands.getCommands(true);
-        if (available.includes(commandId)) {
+        if (availableSet.has(commandId)) {
           log(`submit candidate exists (not executed): ${commandId}`);
         } else {
           log(`submit candidate missing: ${commandId}`);
@@ -135,6 +153,7 @@ export async function injectPrompt(
       }
     }
 
+    timingMs.total = mark("inject complete");
     return {
       usedStrategy: `${openedWith}+paste${submitted ? `+${submitMethod}` : ""}`,
       submitted,
@@ -142,9 +161,11 @@ export async function injectPrompt(
       triedSubmitCommands,
       openedWith,
       details,
+      timingMs,
     };
   } finally {
-    await delay(400);
+    // Restore clipboard off the critical path as much as possible.
+    await delay(100);
     try {
       await vscode.env.clipboard.writeText(previousClipboard);
     } catch {

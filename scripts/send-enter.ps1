@@ -100,19 +100,19 @@ if ($hwnd -eq [IntPtr]::Zero) {
 }
 
 $focused = Focus-Hwnd $hwnd
-Start-Sleep -Milliseconds 200
+Start-Sleep -Milliseconds 50
 
 if ($Chord -eq "ctrl-enter") {
   Send-Key ([VoiceCursorWin]::VK_CONTROL) -Down
-  Start-Sleep -Milliseconds 30
+  Start-Sleep -Milliseconds 20
   Send-Key ([VoiceCursorWin]::VK_RETURN) -Down
-  Start-Sleep -Milliseconds 30
+  Start-Sleep -Milliseconds 20
   Send-Key ([VoiceCursorWin]::VK_RETURN) -Up
-  Start-Sleep -Milliseconds 30
+  Start-Sleep -Milliseconds 20
   Send-Key ([VoiceCursorWin]::VK_CONTROL) -Up
 } else {
   Send-Key ([VoiceCursorWin]::VK_RETURN) -Down
-  Start-Sleep -Milliseconds 30
+  Start-Sleep -Milliseconds 20
   Send-Key ([VoiceCursorWin]::VK_RETURN) -Up
 }
 

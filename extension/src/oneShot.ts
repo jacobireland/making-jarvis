@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import { injectPrompt } from "./inject";
 import { waitForAgentResponseFast, waitForTtsDoneFast } from "./agentWait";
 import { showStickyListeningUi } from "./listenUi";
+import { createTimedLogger } from "./log";
+import type { SubmitChord } from "./inject";
 
 export async function startPushToTalk(options: {
   serviceBase: string;
@@ -38,6 +40,7 @@ export async function stopPushToTalkAndSend(options: {
   newChat: boolean;
   submitCandidates: string[];
   confirmTranscript: boolean;
+  submitChord?: SubmitChord;
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
 }): Promise<void> {
@@ -47,9 +50,11 @@ export async function stopPushToTalkAndSend(options: {
     newChat,
     submitCandidates,
     confirmTranscript,
-    log,
+    submitChord = "enter",
     setStatus,
   } = options;
+  const turnStarted = Date.now();
+  const log = createTimedLogger(options.log, { startedAt: turnStarted });
   const base = serviceBase.replace(/\/$/, "");
 
   setStatus("transcribing", "stopping mic");
@@ -113,6 +118,7 @@ export async function stopPushToTalkAndSend(options: {
     const injectResult = await injectPrompt(transcript, {
       strategy: "auto",
       submitCandidates,
+      submitChord,
       log: (msg) => log(`[ptt/inject] ${msg}`),
       newChat,
       extensionPath,
@@ -215,6 +221,7 @@ export async function runOneShotTalk(options: {
   listenSeconds: number;
   newChat: boolean;
   submitCandidates: string[];
+  submitChord?: SubmitChord;
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
   /** Called after mic starts so the extension can point the status bar at Stop. */
@@ -250,6 +257,7 @@ export async function runOneShotTalk(options: {
     extensionPath: options.extensionPath,
     newChat: options.newChat,
     submitCandidates: options.submitCandidates,
+    submitChord: options.submitChord,
     confirmTranscript: true,
     log: options.log,
     setStatus: options.setStatus,

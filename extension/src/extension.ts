@@ -1,13 +1,14 @@
 import * as vscode from "vscode";
 import WebSocket from "ws";
 import type { AgentResponseEvent, VoiceCursorEvent } from "@voice-cursor/shared";
-import { injectPrompt, type InjectionStrategy } from "./inject";
+import { injectPrompt, type InjectionStrategy, type SubmitChord } from "./inject";
 import { inventoryAgentCommands, writeInventoryMarkdown } from "./inventory";
 import { diagnoseCapture } from "./diagnose";
 import { waitForCapturedMarker } from "./proveSubmit";
 import { notifyAgentResponse, notifyTtsDone } from "./agentWait";
 import { runOneShotTalk, startPushToTalk, stopPushToTalkAndSend } from "./oneShot";
 import { showStickyListeningUi, signalListenEnd } from "./listenUi";
+import { createTimedLogger } from "./log";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
@@ -52,6 +53,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const result = await injectPrompt(prompt, {
           strategy,
           submitCandidates: getSubmitCandidates(),
+          submitChord: getSubmitChord(),
           log: (msg) => output.appendLine(`[inject] ${msg}`),
           extensionPath,
         });
@@ -162,6 +164,7 @@ export function activate(context: vscode.ExtensionContext): void {
         injectResult = await injectPrompt(prompt, {
           strategy: "auto",
           submitCandidates: getSubmitCandidates(),
+          submitChord: getSubmitChord(),
           log: (msg) => output.appendLine(`[prove/inject] ${msg}`),
           newChat: true,
           extensionPath,
@@ -234,6 +237,7 @@ export function activate(context: vscode.ExtensionContext): void {
             .get<number>("listenSeconds", 7),
           newChat,
           submitCandidates: getSubmitCandidates(),
+          submitChord: getSubmitChord(),
           log: (msg) => output.appendLine(msg),
           setStatus,
           onListening: () => {
@@ -335,6 +339,7 @@ export function activate(context: vscode.ExtensionContext): void {
           extensionPath,
           newChat,
           submitCandidates: getSubmitCandidates(),
+          submitChord: getSubmitChord(),
           confirmTranscript,
           log: (msg) => output.appendLine(msg),
           setStatus,
@@ -384,6 +389,14 @@ function getStrategy(): InjectionStrategy {
     .getConfiguration("voiceCursor")
     .get<string>("injectionStrategy", "auto");
   return value as InjectionStrategy;
+}
+
+function getSubmitChord(): SubmitChord {
+  const value = vscode.workspace
+    .getConfiguration("voiceCursor")
+    .get<string>("submitChord", "enter");
+  if (value === "ctrl-enter" || value === "both" || value === "enter") return value;
+  return "enter";
 }
 
 function getSubmitCandidates(): string[] {

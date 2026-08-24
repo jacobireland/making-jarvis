@@ -85,6 +85,12 @@
           "default": true,
           "description": "Ask for confirmation before sending a transcript to the Agent"
         },
+        "voiceCursor.submitChord": {
+          "type": "string",
+          "default": "enter",
+          "enum": ["enter", "ctrl-enter", "both"],
+          "description": "OS key used to submit after paste. Prefer 'enter' (fastest). Use 'ctrl-enter' if your Cursor setting requires it, or 'both' as a fallback (slower)."
+        },
         "voiceCursor.injectionStrategy": {
           "type": "string",
           "default": "auto",
