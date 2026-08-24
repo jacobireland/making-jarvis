@@ -6,12 +6,18 @@ import { inventoryAgentCommands, writeInventoryMarkdown } from "./inventory";
 import { diagnoseCapture } from "./diagnose";
 import { waitForCapturedMarker } from "./proveSubmit";
 import { notifyAgentResponse, notifyTtsDone } from "./agentWait";
-import { runOneShotTalk, startPushToTalk, stopPushToTalkAndSend } from "./oneShot";
-import { showStickyListeningUi, signalListenEnd } from "./listenUi";
+import { startPushToTalk, stopPushToTalkAndSend } from "./oneShot";
+import { signalListenEnd } from "./listenUi";
 import {
   ensureVoiceService,
   stopManagedVoiceService,
 } from "./serviceProcess";
+import { stampOutputChannel } from "./log";
+import { shouldAutoRearm } from "./handsFree";
+import {
+  voiceCursorStatusBarText,
+  voiceCursorStatusBarTooltip,
+} from "./statusBar";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
@@ -24,18 +30,22 @@ let reconnectTimer: NodeJS.Timeout | undefined;
 let reconnectAttempt = 0;
 let extensionPath = "";
 let oneShotRunning = false;
-/** When true, Stop status-bar click only ends the sticky UI; caller runs send. */
-let deferStopToCaller = false;
 /** After first same-thread inject in this session, keep using current chat. */
 let sessionOpenedAgentChat = false;
+/** True while a listen session is armed (Start succeeded, not yet send/cancel). */
+let listenArmed = false;
+/** True from first successful Start until the user turns Voice Cursor off. */
+let handsFreeSession = false;
+/** Bumped on cancel so an in-flight turn will not auto-rearm. */
+let listenSessionId = 0;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionPath = context.extensionPath;
-  output = vscode.window.createOutputChannel(OUTPUT_CHANNEL);
+  output = stampOutputChannel(vscode.window.createOutputChannel(OUTPUT_CHANNEL));
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  status.text = "$(unmute) Voice Cursor: idle";
-  status.tooltip = "Voice Cursor: Start Listening";
-  status.command = "voiceCursor.startListening";
+  status.text = voiceCursorStatusBarText(false);
+  status.tooltip = voiceCursorStatusBarTooltip(false, false);
+  status.command = "voiceCursor.toggleListening";
   status.show();
 
   context.subscriptions.push(output, status);
@@ -222,89 +232,59 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.oneShotTalk", async () => {
-      if (!(await cancelInFlightTurnIfRequested("Voice Cursor is still finishing the previous turn."))) {
+      await beginListening("user");
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("voiceCursor.toggleListening", async () => {
+      if (listenArmed) {
+        const pick = await vscode.window.showQuickPick(
+          [
+            {
+              label: "$(mute) Turn off listening",
+              description: "Stop the mic without sending",
+              action: "off" as const,
+            },
+            {
+              label: "$(send) Send now",
+              description: "Stop and send what we heard",
+              action: "send" as const,
+            },
+          ],
+          {
+            title: "Voice Cursor is listening",
+            placeHolder: "Turn off, or send now",
+            ignoreFocusOut: true,
+          },
+        );
+        if (!pick) return;
+        if (pick.action === "off") {
+          await vscode.commands.executeCommand("voiceCursor.cancelListening");
+        } else {
+          await vscode.commands.executeCommand("voiceCursor.stopListeningAndSend");
+        }
         return;
       }
-      oneShotRunning = true;
-      output.show(true);
-      try {
-        const newChat = resolveNewChat();
-        await runOneShotTalk({
-          serviceBase: serviceBase(),
-          extensionPath,
-          newChat,
-          submitCandidates: getSubmitCandidates(),
-          submitChord: getSubmitChord(),
-          confirmTranscript: isConfirmTranscriptEnabled(),
-          quietUi: isQuietUiEnabled(),
-          log: (msg) => output.appendLine(msg),
-          setStatus,
-          onListening: () => {
-            deferStopToCaller = true;
-            status.command = "voiceCursor.stopListeningAndSend";
-            status.tooltip = "Click to stop listening and send";
-            status.text = "$(mic) Voice Cursor: listening (click to send)";
-          },
-          onInjected: (openedWith) => noteChatOpened(openedWith),
-        });
-      } finally {
-        deferStopToCaller = false;
-        oneShotRunning = false;
-        resetStatusBarIdle();
+      if (handsFreeSession || oneShotRunning) {
+        await vscode.commands.executeCommand("voiceCursor.cancelListening");
+        return;
       }
+      await vscode.commands.executeCommand("voiceCursor.startListening");
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.startListening", async () => {
-      if (
-        !(await cancelInFlightTurnIfRequested(
-          "Voice Cursor is still finishing the previous turn (waiting on Agent/TTS).",
-        ))
-      ) {
-        return;
-      }
-      output.show(true);
-      const ok = await startPushToTalk({
-        serviceBase: serviceBase(),
-        log: (msg) => output.appendLine(msg),
-        setStatus,
-      });
-      if (!ok) return;
-
-      status.command = "voiceCursor.stopListeningAndSend";
-      status.tooltip = "Click to stop listening and send";
-      status.text = "$(mic) Voice Cursor: listening (click to send)";
-
-      // Sticky progress — does not vanish like a toast.
-      void showStickyListeningUi({
-        onCancel: async () => {
-          try {
-            await postJson("/stt/cancel", {});
-          } catch {
-            // ignore
-          }
-          setStatus("idle", "cancelled");
-          resetStatusBarIdle();
-        },
-      }).then((action) => {
-        if (action === "send") {
-          // stopListeningAndSend is already running from the status-bar click
-          return;
-        }
-      });
+      await beginListening("user");
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.stopListeningAndSend", async () => {
-      // Always dismiss sticky listening UI first.
+      // Always clear any listen waiter first.
+      listenArmed = false;
       signalListenEnd("send");
-
-      if (deferStopToCaller) {
-        // One-Shot owns the send path after the sticky UI resolves.
-        return;
-      }
 
       if (oneShotRunning) {
         vscode.window.showWarningMessage(
@@ -312,39 +292,20 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         return;
       }
-      oneShotRunning = true;
-      output.show(true);
-      try {
-        const newChat = resolveNewChat();
-        const confirmTranscript = isConfirmTranscriptEnabled();
-        await stopPushToTalkAndSend({
-          serviceBase: serviceBase(),
-          extensionPath,
-          newChat,
-          submitCandidates: getSubmitCandidates(),
-          submitChord: getSubmitChord(),
-          confirmTranscript,
-          quietUi: isQuietUiEnabled(),
-          log: (msg) => output.appendLine(msg),
-          setStatus,
-          onInjected: (openedWith) => noteChatOpened(openedWith),
-        });
-      } finally {
-        oneShotRunning = false;
-        resetStatusBarIdle();
-      }
+      await finishTurnThenMaybeRearm();
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.cancelListening", async () => {
+      endHandsFreeSession();
       try {
         await postJson("/stt/cancel", {});
       } catch {
         // ignore
       }
+      listenArmed = false;
       signalListenEnd("cancel");
-      deferStopToCaller = false;
       oneShotRunning = false;
       setStatus("idle", "cancelled");
       resetStatusBarIdle();
@@ -358,15 +319,18 @@ export function activate(context: vscode.ExtensionContext): void {
   void warmSendEnterHost(extensionPath).then(() => {
     output.appendLine("[inject] send-enter host warmed");
   });
-  output.appendLine("Voice Cursor activated (push-to-talk).");
+  output.appendLine("Voice Cursor activated (push-to-talk + pause-to-send).");
   output.appendLine(
     isAutoStartEnabled()
       ? "1) Voice service auto-starts if needed (or keep npm run service running)"
       : "1) Start service: npm run service",
   );
-  output.appendLine("2) Start Listening or One-Shot Talk");
-  output.appendLine("3) While listening: click status-bar mic to Stop & Send");
-  output.appendLine("   (sticky notification also stays up — Cancel there to abort)");
+  output.appendLine("2) Click the status-bar Voice Cursor item to turn listening on");
+  output.appendLine(
+    isAutoEndEnabled()
+      ? "3) Speak, then pause — Flux auto-sends. Listening comes back on after the reply. Status bar shows IDLE or LISTENING. Click it to turn off, or send now."
+      : "3) While listening: click the status-bar item to turn off or send. After the reply, listening comes back on. Status bar shows IDLE or LISTENING.",
+  );
   output.appendLine(
     `Chat mode: ${
       vscode.workspace
@@ -424,9 +388,84 @@ function serviceBase(): string {
 }
 
 function resetStatusBarIdle(): void {
-  status.command = "voiceCursor.startListening";
-  status.tooltip = "Voice Cursor: Start Listening";
-  status.text = "$(unmute) Voice Cursor: idle";
+  applyStatusBar();
+}
+
+function endHandsFreeSession(): void {
+  listenSessionId += 1;
+  handsFreeSession = false;
+  listenArmed = false;
+}
+
+async function beginListening(source: "user" | "rearm"): Promise<void> {
+  if (listenArmed) return;
+  if (source === "rearm" && !handsFreeSession) return;
+  if (source === "user") {
+    if (
+      !(await cancelInFlightTurnIfRequested(
+        "Voice Cursor is still finishing the previous turn (waiting on Agent/TTS).",
+      ))
+    ) {
+      return;
+    }
+    output.show(true);
+  }
+
+  const started = await startPushToTalk({
+    serviceBase: serviceBase(),
+    log: (msg) => output.appendLine(msg),
+    setStatus,
+    autoEnd: isAutoEndEnabled(),
+  });
+  if (!started.ok) {
+    if (source === "rearm") {
+      output.appendLine("[ptt] auto-rearm failed");
+    }
+    return;
+  }
+
+  handsFreeSession = true;
+  listenArmed = true;
+  applyStatusBar();
+  if (source === "rearm") {
+    output.appendLine("[ptt] auto-rearmed listening");
+  }
+}
+
+async function finishTurnThenMaybeRearm(): Promise<void> {
+  const sessionId = listenSessionId;
+  oneShotRunning = true;
+  output.show(true);
+  try {
+    await stopPushToTalkAndSend({
+      serviceBase: serviceBase(),
+      extensionPath,
+      newChat: resolveNewChat(),
+      submitCandidates: getSubmitCandidates(),
+      submitChord: getSubmitChord(),
+      confirmTranscript: isConfirmTranscriptEnabled(),
+      quietUi: isQuietUiEnabled(),
+      quietEmpty: isAutoRearmEnabled() && handsFreeSession,
+      log: (msg) => output.appendLine(msg),
+      setStatus,
+      onInjected: (openedWith) => noteChatOpened(openedWith),
+    });
+  } finally {
+    oneShotRunning = false;
+  }
+
+  if (
+    shouldAutoRearm({
+      sessionEnabled: handsFreeSession,
+      autoRearm: isAutoRearmEnabled(),
+      cancelled: sessionId !== listenSessionId,
+    })
+  ) {
+    output.appendLine("[ptt] auto-rearm after turn");
+    await beginListening("rearm");
+    return;
+  }
+  if (!listenArmed) resetStatusBarIdle();
 }
 
 /**
@@ -447,7 +486,7 @@ async function cancelInFlightTurnIfRequested(message: string): Promise<boolean> 
   }
   signalListenEnd("cancel");
   oneShotRunning = false;
-  deferStopToCaller = false;
+  endHandsFreeSession();
   return true;
 }
 
@@ -467,6 +506,24 @@ function isQuietUiEnabled(): boolean {
   return vscode.workspace
     .getConfiguration("voiceCursor")
     .get<boolean>("quietUi", true);
+}
+
+function isAutoEndEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("voiceCursor")
+    .get<boolean>("autoEndUtterance", true);
+}
+
+function isAutoRearmEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("voiceCursor")
+    .get<boolean>("autoRearmListening", true);
+}
+
+function applyStatusBar(): void {
+  status.command = "voiceCursor.toggleListening";
+  status.text = voiceCursorStatusBarText(listenArmed);
+  status.tooltip = voiceCursorStatusBarTooltip(listenArmed, handsFreeSession);
 }
 
 /**
@@ -504,9 +561,8 @@ function wsUrl(): string {
   return `${base.replace(/^http/, "ws")}/ws`;
 }
 
-function setStatus(state: string, detail?: string): void {
-  status.text = `$(unmute) Voice Cursor: ${state}`;
-  status.tooltip = detail ?? "Voice Cursor";
+function setStatus(_state: string, _detail?: string): void {
+  applyStatusBar();
 }
 
 function connectSocket(): void {
@@ -530,7 +586,9 @@ function connectSocket(): void {
   next.on("open", () => {
     reconnectAttempt = 0;
     output.appendLine("[ws] connected");
-    setStatus("idle", "connected to voice service");
+    if (!listenArmed && !handsFreeSession) {
+      setStatus("idle", "connected to voice service");
+    }
   });
 
   next.on("message", (data) => {
@@ -579,6 +637,18 @@ function connectSocket(): void {
 }
 
 function handleEvent(event: VoiceCursorEvent): void {
+  if (event.type === "utterance_end") {
+    output.appendLine(
+      `[utterance_end] engine=${event.engine ?? "?"} chars=${event.text.length} ${event.text.slice(0, 160)}`,
+    );
+    if (!listenArmed) return;
+    listenArmed = false;
+    signalListenEnd("send");
+    if (!oneShotRunning) {
+      void vscode.commands.executeCommand("voiceCursor.stopListeningAndSend");
+    }
+    return;
+  }
   if (event.type === "agent_thought") {
     output.appendLine(
       `[agent_thought] spokenChars=${event.spokenText.length} rawChars=${event.text.length} durationMs=${event.durationMs ?? "n/a"} ${event.spokenText.slice(0, 160)}`,
@@ -588,7 +658,9 @@ function handleEvent(event: VoiceCursorEvent): void {
   if (event.type === "agent_response") {
     lastAgentResponse = event;
     notifyAgentResponse(event);
-    setStatus("idle", "response captured");
+    if (!oneShotRunning && !handsFreeSession) {
+      setStatus("idle", "response captured");
+    }
     output.appendLine(
       `[agent_response] spokenChars=${event.spokenText.length} rawChars=${event.text.length} ${event.spokenText.slice(0, 160)}`,
     );

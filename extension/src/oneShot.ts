@@ -1,36 +1,62 @@
 import * as vscode from "vscode";
 import { injectPrompt } from "./inject";
 import { waitForAgentResponseFast, waitForTtsDoneFast } from "./agentWait";
-import { showStickyListeningUi } from "./listenUi";
 import { createTimedLogger } from "./log";
 import type { SubmitChord } from "./inject";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export async function startPushToTalk(options: {
   serviceBase: string;
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
-}): Promise<boolean> {
+  autoEnd?: boolean;
+}): Promise<{ ok: boolean; autoEnd: boolean; mode?: string }> {
   const base = options.serviceBase.replace(/\/$/, "");
-  options.setStatus("listening", "push-to-talk");
+  const autoEnd = options.autoEnd !== false;
+  options.setStatus("listening", autoEnd ? "pause to send" : "push-to-talk");
   options.log("[ptt] starting mic");
   try {
-    const res = await fetch(`${base}/stt/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ maxSeconds: 120 }),
-    });
-    const body = (await res.json()) as { ok?: boolean; error?: string; id?: string };
-    if (!res.ok || !body.ok) {
-      throw new Error(body.error ?? `STT start HTTP ${res.status}`);
+    let lastError = "STT start failed";
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const res = await fetch(`${base}/stt/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxSeconds: 120, autoEnd }),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        id?: string;
+        autoEnd?: boolean;
+        mode?: string;
+        resumed?: boolean;
+      };
+      if (res.status === 409) {
+        lastError = body.error ?? "speech pipeline busy";
+        options.log(`[ptt] start busy attempt=${attempt + 1} ${lastError}`);
+        await sleep(20);
+        continue;
+      }
+      if (!res.ok || !body.ok) {
+        throw new Error(body.error ?? `STT start HTTP ${res.status}`);
+      }
+      const resolvedAutoEnd = body.autoEnd === true;
+      options.log(
+        `[ptt] listening id=${body.id} mode=${body.mode ?? "?"} autoEnd=${resolvedAutoEnd}${
+          body.resumed ? " resumed=true" : ""
+        }`,
+      );
+      return { ok: true, autoEnd: resolvedAutoEnd, mode: body.mode };
     }
-    options.log(`[ptt] listening id=${body.id}`);
-    // Do not use a vanishing toast for Stop — status bar + sticky progress own that.
-    return true;
+    throw new Error(lastError);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     options.setStatus("error", message);
     vscode.window.showErrorMessage(`Voice Cursor failed to start listening: ${message}`);
-    return false;
+    return { ok: false, autoEnd: false };
   }
 }
 
@@ -45,6 +71,8 @@ export async function stopPushToTalkAndSend(options: {
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
   onInjected?: (openedWith?: string) => void;
+  /** When true, empty transcripts stay quiet so a hands-free session can rearm. */
+  quietEmpty?: boolean;
 }): Promise<void> {
   const {
     serviceBase,
@@ -56,6 +84,7 @@ export async function stopPushToTalkAndSend(options: {
     submitChord = "enter",
     setStatus,
     onInjected,
+    quietEmpty = false,
   } = options;
   const turnStarted = Date.now();
   const log = createTimedLogger(options.log, { startedAt: turnStarted });
@@ -94,7 +123,10 @@ export async function stopPushToTalkAndSend(options: {
 
   if (!transcript) {
     setStatus("idle", "no speech detected");
-    vscode.window.showWarningMessage("Voice Cursor: no speech detected. Try again.");
+    log("[ptt] no speech detected");
+    if (!quietEmpty) {
+      vscode.window.showWarningMessage("Voice Cursor: no speech detected. Try again.");
+    }
     return;
   }
 
@@ -220,58 +252,4 @@ export async function stopPushToTalkAndSend(options: {
   if (!quietUi) {
     void vscode.window.showInformationMessage("Voice Cursor: done.");
   }
-}
-
-/** One-shot = start listen, sticky UI until status-bar Stop & Send (or Cancel). */
-export async function runOneShotTalk(options: {
-  serviceBase: string;
-  extensionPath: string;
-  newChat: boolean;
-  submitCandidates: string[];
-  submitChord?: SubmitChord;
-  confirmTranscript?: boolean;
-  quietUi?: boolean;
-  log: (message: string) => void;
-  setStatus: (state: string, detail?: string) => void;
-  /** Called after mic starts so the extension can point the status bar at Stop. */
-  onListening?: () => void;
-  onInjected?: (openedWith?: string) => void;
-}): Promise<void> {
-  const started = await startPushToTalk({
-    serviceBase: options.serviceBase,
-    log: options.log,
-    setStatus: options.setStatus,
-  });
-  if (!started) return;
-
-  options.onListening?.();
-
-  const action = await showStickyListeningUi({
-    onCancel: async () => {
-      await fetch(`${options.serviceBase.replace(/\/$/, "")}/stt/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      }).catch(() => undefined);
-    },
-  });
-
-  if (action !== "send") {
-    options.setStatus("idle", "cancelled");
-    options.log("[ptt] listening cancelled from sticky UI");
-    return;
-  }
-
-  await stopPushToTalkAndSend({
-    serviceBase: options.serviceBase,
-    extensionPath: options.extensionPath,
-    newChat: options.newChat,
-    submitCandidates: options.submitCandidates,
-    submitChord: options.submitChord,
-    confirmTranscript: options.confirmTranscript ?? false,
-    quietUi: options.quietUi ?? true,
-    log: options.log,
-    setStatus: options.setStatus,
-    onInjected: options.onInjected,
-  });
 }

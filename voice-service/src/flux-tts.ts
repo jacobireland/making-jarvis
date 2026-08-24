@@ -6,6 +6,58 @@ const FLUX_SAMPLE_RATE = 24_000;
 const FLUX_CHANNELS = 1;
 const FLUX_BITS = 16;
 
+export const DEFAULT_FLUX_TTS_EXPRESSIVITY = 0;
+export const FLUX_TTS_EXPRESSIVITY_MIN = -2;
+export const FLUX_TTS_EXPRESSIVITY_MAX = 2;
+
+const EXPRESSIVITY_ALIASES: Record<string, number> = {
+  calm: -2,
+  subdued: -1,
+  quiet: -1,
+  default: 0,
+  normal: 0,
+  lively: 1,
+  animated: 2,
+};
+
+/** Parse Flux `expressivity` (`-2` calm … `2` animated). Invalid values fall back to `0`. */
+export function parseFluxExpressivity(raw: string | undefined | null): number {
+  if (raw == null) return DEFAULT_FLUX_TTS_EXPRESSIVITY;
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return DEFAULT_FLUX_TTS_EXPRESSIVITY;
+  if (Object.prototype.hasOwnProperty.call(EXPRESSIVITY_ALIASES, trimmed)) {
+    return EXPRESSIVITY_ALIASES[trimmed];
+  }
+  const n = Number(trimmed);
+  if (
+    !Number.isFinite(n) ||
+    !Number.isInteger(n) ||
+    n < FLUX_TTS_EXPRESSIVITY_MIN ||
+    n > FLUX_TTS_EXPRESSIVITY_MAX
+  ) {
+    console.warn(
+      `[voice-cursor] invalid Flux expressivity=${JSON.stringify(raw)}; using ${DEFAULT_FLUX_TTS_EXPRESSIVITY}`,
+    );
+    return DEFAULT_FLUX_TTS_EXPRESSIVITY;
+  }
+  return n;
+}
+
+export function fluxSpeakUrl(options: {
+  model: string;
+  expressivity?: number;
+  sampleRate?: number;
+}): string {
+  const expressivity = options.expressivity ?? DEFAULT_FLUX_TTS_EXPRESSIVITY;
+  const params = new URLSearchParams({
+    model: options.model,
+    encoding: "linear16",
+    sample_rate: String(options.sampleRate ?? FLUX_SAMPLE_RATE),
+    expressivity: String(expressivity),
+  });
+  return `wss://api.deepgram.com/v2/speak?${params}`;
+}
+
 export type FluxAudioHandler = (pcm: Buffer) => void;
 
 export type FluxSpeakTurnResult = {
@@ -34,20 +86,27 @@ export class FluxTtsSession {
   private socket: WebSocket | null = null;
   private readonly model: string;
   private readonly speed: number;
+  private readonly expressivity: number;
   private readonly apiKey: string;
   private connectPromise: Promise<void> | null = null;
   private pending: PendingTurn | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
 
-  constructor(options: { apiKey: string; model: string; speed: number }) {
+  constructor(options: {
+    apiKey: string;
+    model: string;
+    speed: number;
+    expressivity?: number;
+  }) {
     this.apiKey = options.apiKey;
     this.model = options.model;
     this.speed = options.speed;
+    this.expressivity = options.expressivity ?? DEFAULT_FLUX_TTS_EXPRESSIVITY;
   }
 
   get configKey(): string {
-    return `${this.model}|${this.speed}`;
+    return `${this.model}|${this.speed}|${this.expressivity}`;
   }
 
   async ensureConnected(): Promise<void> {
@@ -63,12 +122,10 @@ export class FluxTtsSession {
 
   private openSocket(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const params = new URLSearchParams({
+      const url = fluxSpeakUrl({
         model: this.model,
-        encoding: "linear16",
-        sample_rate: String(FLUX_SAMPLE_RATE),
+        expressivity: this.expressivity,
       });
-      const url = `wss://api.deepgram.com/v2/speak?${params}`;
       const ws = new WebSocket(url, {
         headers: { Authorization: `Token ${this.apiKey}` },
       });
@@ -116,7 +173,7 @@ export class FluxTtsSession {
         this.socket = ws;
         this.startPing();
         console.log(
-          `[voice-cursor] flux-tts connected model=${this.model} speed=${this.speed} via=${via}`,
+          `[voice-cursor] flux-tts connected model=${this.model} speed=${this.speed} expressivity=${this.expressivity} via=${via}`,
         );
         ok();
       };

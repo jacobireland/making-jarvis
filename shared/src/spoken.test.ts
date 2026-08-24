@@ -21,6 +21,31 @@ test("preserves paragraph boundaries as sentence pauses", () => {
   assert.match(spoken, /way\.\s+Yard bees/i);
 });
 
+test("treats em dashes as sentence pauses", () => {
+  const spoken = toSpokenText("Click idle — the mic is off.");
+  assert.match(spoken, /idle\.\s+the mic is off/i);
+  assert.doesNotMatch(spoken, /[—–]/);
+});
+
+test("treats spaced hyphens as sentence pauses", () => {
+  const spoken = toSpokenText("Arm the mic - then speak.");
+  assert.match(spoken, /mic\.\s+then speak/i);
+});
+
+test("keeps hyphenated words intact", () => {
+  const spoken = toSpokenText("This is a well-known end-of-utterance fix.");
+  assert.match(spoken, /well-known/);
+  assert.match(spoken, /end-of-utterance/);
+});
+
+test("thought last sentence also pauses on dashes", () => {
+  const spoken = toSpokenThoughtText(
+    "Checking the status bar. Idle means the mic is off - not always listening.",
+  );
+  assert.match(spoken, /off\.\s+not always listening/i);
+  assert.doesNotMatch(spoken, /Checking the status bar/i);
+});
+
 test("turns label-style line lists into separate spoken sentences", () => {
   const raw = `What they do learn is the stuff that actually matters to them:
 

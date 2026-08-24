@@ -1,6 +1,56 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { pcmToWav } from "./flux-tts";
+import { fluxSpeakUrl, parseFluxExpressivity, pcmToWav } from "./flux-tts";
+
+describe("parseFluxExpressivity", () => {
+  it("defaults to 0 when unset", () => {
+    assert.equal(parseFluxExpressivity(undefined), 0);
+    assert.equal(parseFluxExpressivity(""), 0);
+    assert.equal(parseFluxExpressivity("  "), 0);
+  });
+
+  it("accepts integers in -2..2", () => {
+    assert.equal(parseFluxExpressivity("-2"), -2);
+    assert.equal(parseFluxExpressivity("-1"), -1);
+    assert.equal(parseFluxExpressivity("0"), 0);
+    assert.equal(parseFluxExpressivity("1"), 1);
+    assert.equal(parseFluxExpressivity("2"), 2);
+  });
+
+  it("accepts calm/animated aliases", () => {
+    assert.equal(parseFluxExpressivity("calm"), -2);
+    assert.equal(parseFluxExpressivity("subdued"), -1);
+    assert.equal(parseFluxExpressivity("quiet"), -1);
+    assert.equal(parseFluxExpressivity("default"), 0);
+    assert.equal(parseFluxExpressivity("lively"), 1);
+    assert.equal(parseFluxExpressivity("animated"), 2);
+    assert.equal(parseFluxExpressivity("CALM"), -2);
+  });
+
+  it("falls back to 0 for invalid values", () => {
+    assert.equal(parseFluxExpressivity("1.5"), 0);
+    assert.equal(parseFluxExpressivity("3"), 0);
+    assert.equal(parseFluxExpressivity("-3"), 0);
+    assert.equal(parseFluxExpressivity("loud"), 0);
+  });
+});
+
+describe("fluxSpeakUrl", () => {
+  it("puts expressivity on the /v2/speak query string", () => {
+    const url = fluxSpeakUrl({ model: "flux-marcelo-en", expressivity: 1 });
+    assert.match(url, /^wss:\/\/api\.deepgram\.com\/v2\/speak\?/);
+    assert.match(url, /model=flux-marcelo-en/);
+    assert.match(url, /encoding=linear16/);
+    assert.match(url, /sample_rate=24000/);
+    assert.match(url, /expressivity=1/);
+  });
+
+  it("defaults expressivity to 0", () => {
+    const url = fluxSpeakUrl({ model: "flux-marcelo-en" });
+    assert.match(url, /expressivity=0/);
+  });
+});
+
 
 describe("pcmToWav", () => {
   it("writes a valid RIFF/WAVE header around PCM", () => {

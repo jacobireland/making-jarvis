@@ -2,7 +2,7 @@
   "name": "voice-cursor",
   "displayName": "Voice Cursor",
   "description": "Voice interface to the existing Cursor Agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "making-jarvis",
   "private": true,
   "engines": {
@@ -48,6 +48,10 @@
         "title": "Voice Cursor: One-Shot Talk"
       },
       {
+        "command": "voiceCursor.toggleListening",
+        "title": "Voice Cursor: Toggle Listening"
+      },
+      {
         "command": "voiceCursor.startListening",
         "title": "Voice Cursor: Start Listening"
       },
@@ -86,7 +90,17 @@
         "voiceCursor.quietUi": {
           "type": "boolean",
           "default": true,
-          "description": "When true, skip routine success toasts during push-to-talk (errors and the sticky listening UI still show)"
+          "description": "When true, skip routine success toasts during push-to-talk (errors still show). Listen state is IDLE/LISTENING on the status bar only."
+        },
+        "voiceCursor.autoEndUtterance": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, auto-send when Deepgram Flux detects end of utterance (a pause). Click Stop & Send still works. Disable for classic click-to-send push-to-talk."
+        },
+        "voiceCursor.autoRearmListening": {
+          "type": "boolean",
+          "default": true,
+          "description": "After the spoken reply finishes, automatically start listening again. Click the status-bar item to turn Voice Cursor off. Disable to require a click before each turn."
         },
         "voiceCursor.submitChord": {
           "type": "string",
@@ -121,7 +135,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "watch": "tsc -w -p tsconfig.json"
+    "watch": "tsc -w -p tsconfig.json",
+    "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@voice-cursor/shared": "0.1.0",

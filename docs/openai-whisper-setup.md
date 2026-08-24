@@ -1,4 +1,8 @@
-# OpenAI Whisper setup (recommended STT)
+# OpenAI Whisper setup (optional STT fallback)
+
+Primary STT is **Deepgram Nova**. See [deepgram-setup.md](deepgram-setup.md).
+
+Whisper is an optional fallback when no Deepgram key is set, or when you force it with `VOICE_CURSOR_STT=openai`.
 
 ## 1. Get an API key
 1. Go to https://platform.openai.com/api-keys
@@ -16,10 +20,16 @@ notepad .env
 ```
 
 Set:
+
 ```env
 OPENAI_API_KEY=sk-your-key-here
+# Leave auto unless you want to skip Deepgram even when that key is present
 VOICE_CURSOR_STT=auto
+# Force Whisper (skip Deepgram):
+# VOICE_CURSOR_STT=openai
 ```
+
+With `auto`, Deepgram wins if `DEEPGRAM_API_KEY` is set; Whisper is used only when Deepgram is missing or fails.
 
 ## 3. Restart the voice service
 ```powershell
@@ -29,16 +39,19 @@ npm run service
 ```
 
 Confirm:
+
 ```powershell
 curl http://127.0.0.1:4738/health
 ```
 
-You want something like:
+If Whisper is the active engine (no Deepgram key, or `VOICE_CURSOR_STT=openai`):
+
 ```json
 "stt": { "resolved": "whisper-openai", "hasOpenAI": true }
 ```
 
 Service log should also show:
+
 ```text
 STT ... resolved=whisper-openai openai=true
 ```
@@ -46,7 +59,7 @@ STT ... resolved=whisper-openai openai=true
 ## 4. Test push-to-talk
 1. Reinstall extension from `extension/` if needed
 2. **Start Listening** → speak → **Stop Listening & Send**
-3. Transcript should be much more accurate
+3. Transcript comes from the same PTT WAV path (`/stt/start` + `/stt/stop`)
 
 ## Cost
 Whisper is billed per audio minute (usually fractions of a cent per short clip). Personal IDE use is typically tiny.

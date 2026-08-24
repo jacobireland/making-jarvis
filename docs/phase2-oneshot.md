@@ -1,27 +1,30 @@
 # Phase 2 — Push-to-talk voice loop
 
 ## Flow
-1. **Voice Cursor: Start Listening** (or click status bar)
+1. **Start Listening** (or click status bar)
 2. Speak as long as you want
-3. **Voice Cursor: Stop Listening & Send** (or click status bar again)
-4. Confirm transcript (optional setting) → Agent → spoken reply
+3. **Pause** — Deepgram Flux auto-sends on end-of-utterance. Or click **Stop Listening & Send**
+4. Optional confirm transcript → Agent → spoken reply
+5. Listening **starts again** until you turn it off
 
-Fixed 7s listen is no longer required for normal use.
+WAV click-to-send is still the fallback when Flux listen isn't available.
 
 ## Commands
 - `Voice Cursor: Start Listening`
 - `Voice Cursor: Stop Listening & Send`
 - `Voice Cursor: Cancel Listening`
-- `Voice Cursor: One-Shot Talk` — start + prompt you to stop (helper)
+- `Voice Cursor: One-Shot Talk` — same as Start Listening
 
 ## Settings
 - `voiceCursor.confirmTranscript` — confirm before send (default **false**)
 - `voiceCursor.oneShotNewChat` — new Agent chat each turn (default **false**; first turn opens one chat, then same thread)
 - `voiceCursor.autoStartService` — spawn voice-service if down (default true)
-- `voiceCursor.quietUi` — skip routine success toasts during PTT (default true)
+- `voiceCursor.quietUi` — skip routine success toasts during PTT (default true). Listen state is the status bar only (**LISTENING** / **IDLE**).
+- `voiceCursor.autoEndUtterance` — pause-to-send via Deepgram Flux (default **true**; click Stop still works)
+- `voiceCursor.autoRearmListening` — after the spoken reply, start listening again (default **true**)
 
 ## STT / TTS
-- STT: Deepgram Nova (Whisper / Windows fallbacks)
-- TTS: Deepgram Flux WebSocket streaming (Edge / Windows fallbacks)
+- STT: **Deepgram Flux** streaming listen (`/v2/listen`) for end-of-utterance; Nova WAV if streaming isn't available (optional OpenAI Whisper, then Windows, as fallbacks)
+- TTS: **Deepgram Flux** WebSocket streaming (Edge / Windows fallbacks)
 
-See also: [phase3-reliability.md](phase3-reliability.md)
+See also: [phase3-reliability.md](phase3-reliability.md) · [deepgram-setup.md](deepgram-setup.md) · [openai-whisper-setup.md](openai-whisper-setup.md) (fallback)
