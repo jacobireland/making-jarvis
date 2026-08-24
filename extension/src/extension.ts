@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import WebSocket from "ws";
 import type { AgentResponseEvent, VoiceCursorEvent } from "@voice-cursor/shared";
-import { injectPrompt, type InjectionStrategy, type SubmitChord } from "./inject";
+import { injectPrompt, warmSendEnterHost, type InjectionStrategy, type SubmitChord } from "./inject";
 import { inventoryAgentCommands, writeInventoryMarkdown } from "./inventory";
 import { diagnoseCapture } from "./diagnose";
 import { waitForCapturedMarker } from "./proveSubmit";
@@ -371,6 +371,9 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   connectSocket();
+  void warmSendEnterHost(extensionPath).then(() => {
+    output.appendLine("[inject] send-enter host warmed");
+  });
   output.appendLine("Voice Cursor activated (push-to-talk).");
   output.appendLine("1) Start service: npm run service");
   output.appendLine("2) Start Listening or One-Shot Talk");

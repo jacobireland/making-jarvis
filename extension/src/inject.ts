@@ -183,7 +183,23 @@ export async function sendEnterToCursor(
     return sendEnterKeyNonWindows(chord, log);
   }
 
-  const script = resolveSendEnterScript(extensionPath);
+  try {
+    const detail = await sendEnterViaWarmHost(chord, extensionPath);
+    log(`send-enter-host: ${detail}`);
+    return { ok: /ok focused=/i.test(detail), detail };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`send-enter-host failed, falling back to one-shot: ${message}`);
+    return sendEnterOneShot(chord, extensionPath, log);
+  }
+}
+
+async function sendEnterOneShot(
+  chord: "enter" | "ctrl-enter",
+  extensionPath: string | undefined,
+  log: (message: string) => void,
+): Promise<{ ok: boolean; detail: string }> {
+  const script = resolveScript(extensionPath, "send-enter.ps1");
   if (!script) {
     log("send-enter.ps1 not found");
     return { ok: false, detail: "script missing" };
@@ -213,16 +229,152 @@ export async function sendEnterToCursor(
   }
 }
 
-function resolveSendEnterScript(extensionPath?: string): string | undefined {
+type EnterHost = {
+  child: ReturnType<typeof import("node:child_process").spawn>;
+  ready: Promise<void>;
+  queue: Array<{
+    settle: (value: string) => void;
+    fail: (error: Error) => void;
+  }>;
+  buffer: string;
+};
+
+let enterHost: EnterHost | null = null;
+let enterHostExtensionPath: string | undefined;
+
+function resolveScript(extensionPath: string | undefined, name: string): string | undefined {
   const candidates = [
-    extensionPath ? path.join(extensionPath, "..", "scripts", "send-enter.ps1") : "",
-    path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "", "scripts", "send-enter.ps1"),
+    extensionPath ? path.join(extensionPath, "..", "scripts", name) : "",
+    path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "", "scripts", name),
   ].filter(Boolean);
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
   }
   return undefined;
+}
+
+/** Warm the persistent Enter host so first submit isn't paying PowerShell cold start. */
+export async function warmSendEnterHost(extensionPath?: string): Promise<void> {
+  if (process.platform !== "win32") return;
+  try {
+    await ensureEnterHost(extensionPath);
+  } catch {
+    // ignore — one-shot fallback still works
+  }
+}
+
+async function ensureEnterHost(extensionPath?: string): Promise<EnterHost> {
+  if (
+    enterHost &&
+    enterHost.child.exitCode === null &&
+    enterHostExtensionPath === extensionPath
+  ) {
+    return enterHost;
+  }
+
+  const script = resolveScript(extensionPath, "send-enter-host.ps1");
+  if (!script) throw new Error("scripts/send-enter-host.ps1 not found");
+
+  const { spawn } = await import("node:child_process");
+  const child = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+    {
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+
+  const host: EnterHost = {
+    child,
+    ready: Promise.resolve(),
+    queue: [],
+    buffer: "",
+  };
+
+  let readyResolve: () => void = () => undefined;
+  let readyReject: (error: Error) => void = () => undefined;
+  host.ready = new Promise<void>((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+
+  const onLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    if (trimmed === "ready") {
+      readyResolve();
+      return;
+    }
+    const pending = host.queue.shift();
+    if (!pending) return;
+    if (/^ok\b/i.test(trimmed)) pending.settle(trimmed);
+    else pending.fail(new Error(trimmed));
+  };
+
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    host.buffer += String(chunk);
+    let idx: number;
+    while ((idx = host.buffer.indexOf("\n")) >= 0) {
+      const line = host.buffer.slice(0, idx);
+      host.buffer = host.buffer.slice(idx + 1);
+      onLine(line.replace(/\r$/, ""));
+    }
+  });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    // keep quiet unless debugging — stderr can be noisy
+    void chunk;
+  });
+  child.on("exit", (code) => {
+    const err = new Error(`send-enter-host exited (${code})`);
+    for (const pending of host.queue.splice(0)) pending.fail(err);
+    if (enterHost === host) enterHost = null;
+    readyReject(err);
+  });
+
+  const timeout = setTimeout(() => {
+    readyReject(new Error("send-enter-host ready timeout"));
+  }, 8_000);
+  host.ready = host.ready.finally(() => clearTimeout(timeout));
+
+  enterHost = host;
+  enterHostExtensionPath = extensionPath;
+  await host.ready;
+  return host;
+}
+
+async function sendEnterViaWarmHost(
+  chord: "enter" | "ctrl-enter",
+  extensionPath?: string,
+): Promise<string> {
+  const host = await ensureEnterHost(extensionPath);
+  return await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("send-enter-host timed out"));
+    }, 5_000);
+    host.queue.push({
+      settle: (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      fail: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
+    try {
+      host.child.stdin?.write(`${chord}\n`);
+    } catch (error) {
+      host.queue.pop();
+      clearTimeout(timer);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+function resolveSendEnterScript(extensionPath?: string): string | undefined {
+  return resolveScript(extensionPath, "send-enter.ps1");
 }
 
 async function sendEnterKeyNonWindows(
