@@ -8,7 +8,6 @@ import { waitForCapturedMarker } from "./proveSubmit";
 import { notifyAgentResponse, notifyTtsDone } from "./agentWait";
 import { runOneShotTalk, startPushToTalk, stopPushToTalkAndSend } from "./oneShot";
 import { showStickyListeningUi, signalListenEnd } from "./listenUi";
-import { createTimedLogger } from "./log";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
