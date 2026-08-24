@@ -11,8 +11,11 @@ const DEFAULT_EDGE_VOICE = "en-PH-JamesNeural";
 /** Default ~25% faster than Edge's natural rate — snappier agent replies. */
 const DEFAULT_EDGE_RATE = 1.25;
 const DEFAULT_DEEPGRAM_STT_MODEL = "nova-3";
-/** Clear male Aura-2 voice; override with VOICE_CURSOR_TTS_VOICE. */
-const DEFAULT_DEEPGRAM_TTS_MODEL = "aura-2-odysseus-en";
+/** Flux Marcelo (v2/speak). Override with VOICE_CURSOR_TTS_VOICE. */
+const DEFAULT_DEEPGRAM_TTS_MODEL = "flux-marcelo-en";
+/** Flux allows discrete speeds; 1.1 matches the user's preferred cadence. */
+const DEFAULT_DEEPGRAM_TTS_SPEED = 1.1;
+const FLUX_TTS_SPEEDS = [0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15] as const;
 
 export function resolveRepoScript(name: string): string | undefined {
   const candidates = [
@@ -105,34 +108,61 @@ function resolveTtsRate(): number | string {
 }
 
 function resolveDeepgramTtsModel(): string {
-  const raw =
+  const raw = (
     process.env.VOICE_CURSOR_DEEPGRAM_TTS_MODEL ||
     process.env.VOICE_CURSOR_TTS_VOICE ||
-    DEFAULT_DEEPGRAM_TTS_MODEL;
+    DEFAULT_DEEPGRAM_TTS_MODEL
+  ).trim();
   // Ignore leftover Edge neural voice names if switching to Deepgram.
-  if (/neural/i.test(raw) || !raw.toLowerCase().startsWith("aura")) {
-    return DEFAULT_DEEPGRAM_TTS_MODEL;
+  if (/neural/i.test(raw)) return DEFAULT_DEEPGRAM_TTS_MODEL;
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("flux-") || lower.startsWith("aura")) return raw;
+  return DEFAULT_DEEPGRAM_TTS_MODEL;
+}
+
+function isFluxTtsModel(model: string): boolean {
+  return model.toLowerCase().startsWith("flux-");
+}
+
+function snapFluxSpeed(value: number): number {
+  let best: number = FLUX_TTS_SPEEDS[0];
+  let bestDist = Math.abs(value - best);
+  for (const candidate of FLUX_TTS_SPEEDS) {
+    const dist = Math.abs(value - candidate);
+    if (dist < bestDist) {
+      best = candidate;
+      bestDist = dist;
+    }
   }
-  return raw;
+  return best;
 }
 
 function resolveDeepgramTtsSpeed(): number {
-  const rate = resolveTtsRate();
-  if (typeof rate === "number") return rate;
-  const map: Record<string, number> = {
-    "x-slow": 0.7,
-    slow: 0.85,
-    medium: 1,
-    default: 1,
-    fast: 1.25,
-    "x-fast": 1.45,
-  };
-  if (typeof rate === "string" && rate in map) return map[rate];
-  if (typeof rate === "string" && rate.endsWith("%")) {
-    const pct = Number(rate.replace("%", ""));
-    if (Number.isFinite(pct)) return Math.min(2, Math.max(0.5, 1 + pct / 100));
+  const raw = process.env.VOICE_CURSOR_TTS_RATE?.trim();
+  let numeric: number | undefined;
+  if (raw) {
+    if (/^[a-z-]+$/i.test(raw)) {
+      const map: Record<string, number> = {
+        "x-slow": 0.85,
+        slow: 0.9,
+        medium: 1,
+        default: 1,
+        fast: 1.1,
+        "x-fast": 1.15,
+      };
+      numeric = map[raw.toLowerCase()];
+    } else if (raw.endsWith("%")) {
+      const pct = Number(raw.replace("%", ""));
+      if (Number.isFinite(pct)) numeric = 1 + pct / 100;
+    } else {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) numeric = n;
+    }
   }
-  return DEFAULT_EDGE_RATE;
+  const target = numeric ?? DEFAULT_DEEPGRAM_TTS_SPEED;
+  const model = resolveDeepgramTtsModel();
+  if (isFluxTtsModel(model)) return snapFluxSpeed(target);
+  return Math.min(2, Math.max(0.5, target));
 }
 
 export function describeTtsConfig(): {
@@ -161,7 +191,7 @@ export function describeTtsConfig(): {
       ? resolveDeepgramTtsModel()
       : (process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE));
 
-  // When resolved to deepgram, always surface the Aura model (not an Edge leftover).
+  // When resolved to deepgram, surface Flux/Aura model (not an Edge leftover).
   const displayVoice =
     resolved === "deepgram" ? resolveDeepgramTtsModel() : voice;
 
@@ -169,7 +199,7 @@ export function describeTtsConfig(): {
     engine: preferred,
     resolved,
     voice: displayVoice,
-    rate: resolveTtsRate(),
+    rate: resolved === "deepgram" ? resolveDeepgramTtsSpeed() : resolveTtsRate(),
     hasDeepgram,
   };
 }
@@ -908,13 +938,18 @@ async function synthDeepgramChunk(text: string, outPath: string): Promise<string
 
   const model = resolveDeepgramTtsModel();
   const speed = resolveDeepgramTtsSpeed();
+  const flux = isFluxTtsModel(model);
   const params = new URLSearchParams({
     model,
     encoding: "mp3",
     speed: String(speed),
   });
+  // Flux voices live on /v2/speak; Aura remains on /v1/speak.
+  const endpoint = flux
+    ? `https://api.deepgram.com/v2/speak?${params}`
+    : `https://api.deepgram.com/v1/speak?${params}`;
 
-  const res = await fetch(`https://api.deepgram.com/v1/speak?${params}`, {
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: {
       Authorization: `Token ${key}`,

@@ -2,7 +2,7 @@
 
 One Deepgram key can power both:
 - **STT:** Nova (`nova-3`) on your push-to-talk WAV
-- **TTS:** Aura (`aura-2-odysseus-en` by default) for agent replies
+- **TTS:** Flux (`flux-marcelo-en` by default) via `/v2/speak`
 
 ## 1. Get an API key
 1. https://console.deepgram.com/ → create a project
@@ -21,12 +21,12 @@ notepad .env
 DEEPGRAM_API_KEY=your-key-here
 VOICE_CURSOR_STT=auto
 VOICE_CURSOR_TTS=auto
-VOICE_CURSOR_TTS_RATE=1.25
-# Optional voice (Aura-2 models):
-# VOICE_CURSOR_TTS_VOICE=aura-2-odysseus-en
-# VOICE_CURSOR_TTS_VOICE=aura-2-hera-en
-# VOICE_CURSOR_TTS_VOICE=aura-2-apollo-en
+VOICE_CURSOR_TTS_VOICE=flux-marcelo-en
+VOICE_CURSOR_TTS_RATE=1.1
 ```
+
+That matches:
+`https://api.deepgram.com/v2/speak?model=flux-marcelo-en&speed=1.1`
 
 With `auto`, Deepgram is preferred when the key is present (Whisper/Edge remain fallbacks).
 
@@ -40,9 +40,11 @@ npm run service
 Health check should show:
 ```json
 "stt": { "resolved": "deepgram", "hasDeepgram": true }
-"tts": { "resolved": "deepgram", "hasDeepgram": true }
+"tts": { "resolved": "deepgram", "voice": "flux-marcelo-en", "hasDeepgram": true }
 ```
 
-## Voices
-Browse Aura models: https://developers.deepgram.com/docs/tts-models  
-Set `VOICE_CURSOR_TTS_VOICE` to any `aura-2-…` model id.
+## Voices / speed
+- Flux models use `/v2/speak` (`flux-…`)
+- Aura models still use `/v1/speak` (`aura-…`)
+- Flux speed must be one of: `0.85`, `0.9`, `0.95`, `1.0`, `1.05`, `1.1`, `1.15`
+- Voice catalog: https://developers.deepgram.com/docs/flux-tts/voices
