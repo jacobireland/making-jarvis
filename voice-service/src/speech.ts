@@ -107,18 +107,42 @@ export async function listenOnce(options: {
 }
 
 async function playAudioFile(filePath: string): Promise<void> {
+  const stat = fs.statSync(filePath);
+  if (stat.size < 500) {
+    throw new Error(`Generated audio too small (${stat.size} bytes): ${filePath}`);
+  }
+
   if (process.platform === "win32") {
     const script = resolveRepoScript("play-audio-windows.ps1");
     if (!script) throw new Error("scripts/play-audio-windows.ps1 not found");
-    await execFileAsync(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Path", filePath],
-      {
-        windowsHide: true,
-        timeout: 10 * 60 * 1000,
-        maxBuffer: 1024 * 1024,
-      },
-    );
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        "powershell.exe",
+        [
+          "-STA",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          script,
+          "-Path",
+          filePath,
+        ],
+        {
+          windowsHide: true,
+          timeout: 10 * 60 * 1000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      const detail = `${stdout} ${stderr}`.trim();
+      if (!/ok /i.test(detail)) {
+        throw new Error(`Playback did not confirm success: ${detail || "(empty output)"}`);
+      }
+      console.log(`[voice-cursor] playback ${detail}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Audio playback failed: ${message}`);
+    }
     return;
   }
 
@@ -144,7 +168,14 @@ async function speakWithEdge(text: string): Promise<{ engine: string; voice: str
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-tts-"));
   try {
     for (const chunk of chunkForTts(text)) {
+      // msedge-tts injects this string into SSML — escape XML specials.
       const { audioFilePath } = await tts.toFile(tmpDir, escapeXml(chunk));
+      if (!fs.existsSync(audioFilePath)) {
+        throw new Error(`Edge TTS did not write audio file for voice=${voice}`);
+      }
+      console.log(
+        `[voice-cursor] edge-tts wrote ${audioFilePath} (${fs.statSync(audioFilePath).size} bytes) voice=${voice}`,
+      );
       await playAudioFile(audioFilePath);
       try {
         fs.unlinkSync(audioFilePath);
