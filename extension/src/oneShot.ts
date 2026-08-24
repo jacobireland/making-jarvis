@@ -226,7 +226,6 @@ export async function stopPushToTalkAndSend(options: {
 export async function runOneShotTalk(options: {
   serviceBase: string;
   extensionPath: string;
-  listenSeconds: number;
   newChat: boolean;
   submitCandidates: string[];
   submitChord?: SubmitChord;

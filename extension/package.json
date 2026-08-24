@@ -73,13 +73,6 @@
           "default": true,
           "description": "Automatically start the local voice-service process if it is not reachable (recommended). Disable if you always run `npm run service` yourself."
         },
-        "voiceCursor.listenSeconds": {
-          "type": "number",
-          "default": 7,
-          "minimum": 2,
-          "maximum": 30,
-          "description": "How long One-Shot Talk listens to the microphone"
-        },
         "voiceCursor.oneShotNewChat": {
           "type": "boolean",
           "default": false,
@@ -128,8 +121,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "watch": "tsc -w -p tsconfig.json",
-    "test": "node --import tsx --test src/**/*.test.ts || true"
+    "watch": "tsc -w -p tsconfig.json"
   },
   "dependencies": {
     "@voice-cursor/shared": "0.1.0",

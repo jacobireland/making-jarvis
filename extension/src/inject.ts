@@ -373,10 +373,6 @@ async function sendEnterViaWarmHost(
   });
 }
 
-function resolveSendEnterScript(extensionPath?: string): string | undefined {
-  return resolveScript(extensionPath, "send-enter.ps1");
-}
-
 async function sendEnterKeyNonWindows(
   chord: "enter" | "ctrl-enter",
   log: (message: string) => void,

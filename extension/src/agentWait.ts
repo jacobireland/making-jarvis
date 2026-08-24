@@ -16,12 +16,12 @@ const agentWaiters = new Set<AgentWaiter>();
 const ttsWaiters = new Set<TtsWaiter>();
 
 /** Final reply / manual speak — not thinking-block TTS. */
-export const FINAL_TTS_SOURCES = ["after-agent-response", "tts/speak", "speak"] as const;
+export const FINAL_TTS_SOURCES = ["after-agent-response", "tts/speak"] as const;
 
 function matchesTtsSource(event: TtsDoneEvent, sources?: string[]): boolean {
   if (!sources || sources.length === 0) return true;
   // Legacy events without source: treat as final (manual /tts/speak before source tagging).
-  if (!event.source) return sources.includes("tts/speak") || sources.includes("speak");
+  if (!event.source) return sources.includes("tts/speak");
   return sources.includes(event.source);
 }
 

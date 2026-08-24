@@ -138,10 +138,6 @@ async function drainSpeakQueue(): Promise<void> {
   }
 }
 
-async function speakAndAnnounce(text: string, source: string): Promise<void> {
-  await enqueueSpeak(text, source);
-}
-
 function json(res: http.ServerResponse, status: number, body: unknown): void {
   const data = JSON.stringify(body, null, 2);
   res.writeHead(status, {
@@ -334,7 +330,7 @@ const server = http.createServer(async (req, res) => {
       // Reply to the hook immediately, then queue TTS behind any thought speaks.
       json(res, 200, { ok: true, spokenText: event.spokenText, autoSpeak: shouldAutoSpeak });
       if (shouldAutoSpeak && event.spokenText.trim()) {
-        void speakAndAnnounce(event.spokenText, "after-agent-response");
+        void enqueueSpeak(event.spokenText, "after-agent-response");
       } else if (!speechBusy && speakQueue.length === 0) {
         setState("idle", "agent response received");
       }

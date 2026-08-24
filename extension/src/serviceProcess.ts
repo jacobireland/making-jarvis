@@ -161,7 +161,3 @@ export function stopManagedVoiceService(log?: (msg: string) => void): void {
     // ignore
   }
 }
-
-export function isManagingVoiceService(): boolean {
-  return managedChild !== null && managedChild.exitCode === null;
-}

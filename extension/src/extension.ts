@@ -82,16 +82,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("voiceCursor.inventoryCommands", async () => {
       output.appendLine("[inventory] scanning commands…");
       const report = await inventoryAgentCommands();
-      const target = vscode.Uri.joinPath(
-        vscode.workspace.workspaceFolders?.[0]?.uri ?? context.globalStorageUri,
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+      const file = vscode.Uri.joinPath(
+        workspaceRoot ?? context.globalStorageUri,
         "docs",
         "spike-command-inventory.md",
       );
-      // Prefer workspace docs/ when available.
-      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
-      const file = workspaceRoot
-        ? vscode.Uri.joinPath(workspaceRoot, "docs", "spike-command-inventory.md")
-        : target;
       await writeInventoryMarkdown(file, report);
       output.appendLine(`[inventory] wrote ${file.fsPath}`);
       output.appendLine(`[inventory] matched ${report.matched.length} commands`);
@@ -226,21 +222,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.oneShotTalk", async () => {
-      if (oneShotRunning) {
-        const pick = await vscode.window.showWarningMessage(
-          "Voice Cursor is still finishing the previous turn.",
-          "Cancel & Start Fresh",
-          "Keep Waiting",
-        );
-        if (pick !== "Cancel & Start Fresh") return;
-        try {
-          await postJson("/stt/cancel", {});
-        } catch {
-          // ignore
-        }
-        signalListenEnd("cancel");
-        oneShotRunning = false;
-        deferStopToCaller = false;
+      if (!(await cancelInFlightTurnIfRequested("Voice Cursor is still finishing the previous turn."))) {
+        return;
       }
       oneShotRunning = true;
       output.show(true);
@@ -249,9 +232,6 @@ export function activate(context: vscode.ExtensionContext): void {
         await runOneShotTalk({
           serviceBase: serviceBase(),
           extensionPath,
-          listenSeconds: vscode.workspace
-            .getConfiguration("voiceCursor")
-            .get<number>("listenSeconds", 7),
           newChat,
           submitCandidates: getSubmitCandidates(),
           submitChord: getSubmitChord(),
@@ -270,30 +250,19 @@ export function activate(context: vscode.ExtensionContext): void {
       } finally {
         deferStopToCaller = false;
         oneShotRunning = false;
-        status.command = "voiceCursor.startListening";
-        status.tooltip = "Voice Cursor: Start Listening";
-        status.text = "$(unmute) Voice Cursor: idle";
+        resetStatusBarIdle();
       }
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.startListening", async () => {
-      if (oneShotRunning) {
-        const pick = await vscode.window.showWarningMessage(
+      if (
+        !(await cancelInFlightTurnIfRequested(
           "Voice Cursor is still finishing the previous turn (waiting on Agent/TTS).",
-          "Cancel & Start Fresh",
-          "Keep Waiting",
-        );
-        if (pick !== "Cancel & Start Fresh") return;
-        try {
-          await postJson("/stt/cancel", {});
-        } catch {
-          // ignore
-        }
-        signalListenEnd("cancel");
-        oneShotRunning = false;
-        deferStopToCaller = false;
+        ))
+      ) {
+        return;
       }
       output.show(true);
       const ok = await startPushToTalk({
@@ -316,9 +285,7 @@ export function activate(context: vscode.ExtensionContext): void {
             // ignore
           }
           setStatus("idle", "cancelled");
-          status.command = "voiceCursor.startListening";
-          status.tooltip = "Voice Cursor: Start Listening";
-          status.text = "$(unmute) Voice Cursor: idle";
+          resetStatusBarIdle();
         },
       }).then((action) => {
         if (action === "send") {
@@ -364,9 +331,7 @@ export function activate(context: vscode.ExtensionContext): void {
         });
       } finally {
         oneShotRunning = false;
-        status.command = "voiceCursor.startListening";
-        status.tooltip = "Voice Cursor: Start Listening";
-        status.text = "$(unmute) Voice Cursor: idle";
+        resetStatusBarIdle();
       }
     }),
   );
@@ -382,9 +347,7 @@ export function activate(context: vscode.ExtensionContext): void {
       deferStopToCaller = false;
       oneShotRunning = false;
       setStatus("idle", "cancelled");
-      status.command = "voiceCursor.startListening";
-      status.tooltip = "Voice Cursor: Start Listening";
-      status.text = "$(unmute) Voice Cursor: idle";
+      resetStatusBarIdle();
       if (!isQuietUiEnabled()) {
         void vscode.window.showInformationMessage("Voice Cursor: listening cancelled");
       }
@@ -458,6 +421,34 @@ function serviceBase(): string {
     .getConfiguration("voiceCursor")
     .get<string>("serviceUrl", "http://127.0.0.1:4738")
     .replace(/\/$/, "");
+}
+
+function resetStatusBarIdle(): void {
+  status.command = "voiceCursor.startListening";
+  status.tooltip = "Voice Cursor: Start Listening";
+  status.text = "$(unmute) Voice Cursor: idle";
+}
+
+/**
+ * If a turn is in flight, ask to cancel it. Returns false when the user chooses to keep waiting.
+ */
+async function cancelInFlightTurnIfRequested(message: string): Promise<boolean> {
+  if (!oneShotRunning) return true;
+  const pick = await vscode.window.showWarningMessage(
+    message,
+    "Cancel & Start Fresh",
+    "Keep Waiting",
+  );
+  if (pick !== "Cancel & Start Fresh") return false;
+  try {
+    await postJson("/stt/cancel", {});
+  } catch {
+    // ignore
+  }
+  signalListenEnd("cancel");
+  oneShotRunning = false;
+  deferStopToCaller = false;
+  return true;
 }
 
 function isAutoStartEnabled(): boolean {

@@ -3,17 +3,11 @@ import * as vscode from "vscode";
 type ListenEnd = "send" | "cancel";
 
 let endListen: ((action: ListenEnd) => void) | null = null;
-let progressActive = false;
-
-export function isListenUiActive(): boolean {
-  return progressActive || endListen !== null;
-}
 
 /** Resolve the sticky listening UI (status-bar stop or progress cancel). */
 export function signalListenEnd(action: ListenEnd): void {
   const resolve = endListen;
   endListen = null;
-  progressActive = false;
   resolve?.(action);
 }
 
@@ -37,16 +31,12 @@ export async function showStickyListeningUi(options?: {
       cancellable: true,
     },
     async (progress, token) => {
-      progressActive = true;
       progress.report({
         message: "Click the status-bar mic (“listening — click to send”) when done",
       });
 
       return await new Promise<ListenEnd>((resolve) => {
-        endListen = (action) => {
-          progressActive = false;
-          resolve(action);
-        };
+        endListen = resolve;
 
         token.onCancellationRequested(() => {
           void Promise.resolve(options?.onCancel?.()).finally(() => {
