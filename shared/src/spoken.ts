@@ -3,7 +3,8 @@
  * Keeps outcome + questions; strips code, diffs, and huge dumps.
  */
 export function toSpokenText(raw: string, options?: { maxChars?: number }): string {
-  const maxChars = options?.maxChars ?? 420;
+  // High enough for short stories / multi-paragraph replies; still caps novels.
+  const maxChars = options?.maxChars ?? 2500;
   let text = raw.replace(/\r\n/g, "\n").trim();
   if (!text) return "Done.";
 
@@ -39,7 +40,11 @@ export function toSpokenText(raw: string, options?: { maxChars?: number }): stri
   if (text.length <= maxChars) return ensureSentence(text);
 
   const sliced = text.slice(0, maxChars);
-  const cut = Math.max(sliced.lastIndexOf(". "), sliced.lastIndexOf("? "), sliced.lastIndexOf("! "));
+  const cut = Math.max(
+    sliced.lastIndexOf(". "),
+    sliced.lastIndexOf("? "),
+    sliced.lastIndexOf("! "),
+  );
   const clipped = (cut > 80 ? sliced.slice(0, cut + 1) : `${sliced.trim()}…`).trim();
   return ensureSentence(clipped);
 }

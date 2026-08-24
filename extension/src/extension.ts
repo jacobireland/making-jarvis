@@ -17,6 +17,7 @@ let status: vscode.StatusBarItem;
 let socket: WebSocket | undefined;
 let lastAgentResponse: AgentResponseEvent | undefined;
 let reconnectTimer: NodeJS.Timeout | undefined;
+let reconnectAttempt = 0;
 let extensionPath = "";
 let oneShotRunning = false;
 /** When true, Stop status-bar click only ends the sticky UI; caller runs send. */
@@ -426,11 +427,14 @@ function connectSocket(): void {
   }
 
   const url = wsUrl();
-  output.appendLine(`[ws] connecting ${url}`);
+  if (reconnectAttempt === 0) {
+    output.appendLine(`[ws] connecting ${url}`);
+  }
   const next = new WebSocket(url);
   socket = next;
 
   next.on("open", () => {
+    reconnectAttempt = 0;
     output.appendLine("[ws] connected");
     setStatus("idle", "connected to voice service");
   });
@@ -445,13 +449,22 @@ function connectSocket(): void {
   });
 
   next.on("close", () => {
-    output.appendLine("[ws] closed; retrying in 2s");
+    const delay = Math.min(30_000, 1000 * 2 ** Math.min(reconnectAttempt, 4));
+    reconnectAttempt += 1;
+    if (reconnectAttempt <= 3 || reconnectAttempt % 5 === 0) {
+      output.appendLine(
+        `[ws] closed; voice service not reachable — retry in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempt}). Keep npm run service running.`,
+      );
+    }
     setStatus("error", "voice service disconnected");
-    reconnectTimer = setTimeout(connectSocket, 2000);
+    reconnectTimer = setTimeout(connectSocket, delay);
   });
 
   next.on("error", (error) => {
-    output.appendLine(`[ws] error: ${error.message}`);
+    // close handler schedules retry; avoid duplicating every ECONNREFUSED line
+    if (reconnectAttempt === 0) {
+      output.appendLine(`[ws] error: ${error.message}`);
+    }
   });
 }
 
@@ -460,7 +473,9 @@ function handleEvent(event: VoiceCursorEvent): void {
     lastAgentResponse = event;
     notifyAgentResponse(event);
     setStatus("idle", "response captured");
-    output.appendLine(`[agent_response] ${event.spokenText}`);
+    output.appendLine(
+      `[agent_response] spokenChars=${event.spokenText.length} rawChars=${event.text.length} ${event.spokenText.slice(0, 160)}`,
+    );
     // Skip toast during push-to-talk — it adds noise while TTS is starting.
     if (!oneShotRunning) {
       void vscode.window.showInformationMessage(

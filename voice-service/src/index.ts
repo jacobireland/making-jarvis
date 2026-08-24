@@ -24,6 +24,13 @@ import {
 
 loadDotEnv();
 
+process.on("uncaughtException", (error) => {
+  console.error("[voice-cursor] uncaughtException:", error);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[voice-cursor] unhandledRejection:", reason);
+});
+
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
 const VERSION = "0.3.2";
@@ -118,10 +125,15 @@ function asAgentResponse(body: Record<string, unknown>): AgentResponseEvent {
     (typeof body.content === "string" && body.content) ||
     "";
 
+  const maxSpoken = Number(process.env.VOICE_CURSOR_MAX_SPOKEN_CHARS ?? 2500);
+  const spokenText = toSpokenText(text, {
+    maxChars: Number.isFinite(maxSpoken) && maxSpoken > 200 ? maxSpoken : 2500,
+  });
+
   return {
     type: "agent_response",
     text,
-    spokenText: toSpokenText(text),
+    spokenText,
     conversationId:
       typeof body.conversation_id === "string"
         ? body.conversation_id
@@ -201,8 +213,9 @@ const server = http.createServer(async (req, res) => {
       autoSpeakArmed = false;
       console.log(
         "[voice-cursor] agent_response",
+        `rawChars=${event.text.length} spokenChars=${event.spokenText.length}`,
         event.spokenText.slice(0, 120),
-        `(chars=${event.text.length} autoSpeak=${shouldAutoSpeak})`,
+        `(autoSpeak=${shouldAutoSpeak})`,
       );
       // Reply to the hook immediately, then start TTS so first audio isn't
       // blocked on the extension noticing the WS event and POSTing /tts/speak.
