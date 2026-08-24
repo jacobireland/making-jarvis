@@ -16,7 +16,9 @@ if (-not (Test-Path -LiteralPath $Path)) {
 }
 
 $len = (Get-Item -LiteralPath $Path).Length
-if ($len -lt 500) {
+$ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+$minLen = if ($ext -eq ".wav") { 200 } else { 500 }
+if ($len -lt $minLen) {
   Write-Error "Audio file too small ($len bytes): $Path"
 }
 
@@ -43,8 +45,13 @@ function Invoke-Mci([string]$command) {
 try {
   try { [void][VoiceCursorMciPlay]::mciSendString("close vcmedia", $null, 0, [IntPtr]::Zero) } catch {}
 
-  # mpegvideo alias handles mp3 on most Windows installs.
-  Invoke-Mci "open `"$Path`" type mpegvideo alias vcmedia"
+  $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+  if ($ext -eq ".wav") {
+    Invoke-Mci "open `"$Path`" type waveaudio alias vcmedia"
+  } else {
+    # mpegvideo alias handles mp3 on most Windows installs.
+    Invoke-Mci "open `"$Path`" type mpegvideo alias vcmedia"
+  }
   $openMs = $sw.ElapsedMilliseconds
 
   # play ... wait blocks until playback completes.

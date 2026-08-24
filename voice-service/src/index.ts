@@ -33,7 +33,7 @@ process.on("unhandledRejection", (reason) => {
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.3.2";
+const VERSION = "0.3.3";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
@@ -445,7 +445,7 @@ server.listen(PORT, HOST, () => {
     `[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved} deepgram=${stt.hasDeepgram} openai=${stt.hasOpenAI}`,
   );
   console.log(
-    `[voice-cursor] TTS engine=${tts.engine} resolved=${tts.resolved} voice=${tts.voice} rate=${tts.rate} deepgram=${tts.hasDeepgram}`,
+    `[voice-cursor] TTS engine=${tts.engine} resolved=${tts.resolved} voice=${tts.voice} rate=${tts.rate} stream=${tts.stream} deepgram=${tts.hasDeepgram}`,
   );
   logAuthHints();
   void warmTts();

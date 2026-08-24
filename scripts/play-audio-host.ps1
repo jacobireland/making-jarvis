@@ -30,12 +30,19 @@ function Play-One([string]$Path) {
     throw "Audio file not found: $Path"
   }
   $len = (Get-Item -LiteralPath $Path).Length
-  if ($len -lt 500) {
+  $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+  $minLen = if ($ext -eq ".wav") { 200 } else { 500 }
+  if ($len -lt $minLen) {
     throw "Audio file too small ($len bytes)"
   }
 
   [void][VoiceCursorMciPlayHost]::mciSendString("close vcmedia", $null, 0, [IntPtr]::Zero)
-  Invoke-Mci "open `"$Path`" type mpegvideo alias vcmedia"
+  if ($ext -eq ".wav") {
+    Invoke-Mci "open `"$Path`" type waveaudio alias vcmedia"
+  } else {
+    # mpegvideo alias handles mp3 on most Windows installs.
+    Invoke-Mci "open `"$Path`" type mpegvideo alias vcmedia"
+  }
   $openMs = $sw.ElapsedMilliseconds
   Invoke-Mci "play vcmedia wait"
   $totalMs = $sw.ElapsedMilliseconds

@@ -4,6 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { MsEdgeTTS, OUTPUT_FORMAT, ProsodyOptions } from "msedge-tts";
+import {
+  FluxTtsSession,
+  FLUX_TTS_SAMPLE_RATE,
+  writePcmWavFile,
+} from "./flux-tts";
 
 const execFileAsync = promisify(execFile);
 
@@ -198,12 +203,32 @@ function resolveDeepgramTtsSpeed(): number {
   return Math.min(2, Math.max(0.5, target));
 }
 
+function resolveTtsStreamMode(): "auto" | "on" | "off" {
+  const raw = (process.env.VOICE_CURSOR_TTS_STREAM ?? "auto").trim().toLowerCase();
+  if (raw === "0" || raw === "false" || raw === "off" || raw === "rest" || raw === "batch") {
+    return "off";
+  }
+  if (raw === "1" || raw === "true" || raw === "on" || raw === "ws" || raw === "stream") {
+    return "on";
+  }
+  return "auto";
+}
+
+function shouldStreamDeepgramTts(model: string): boolean {
+  const mode = resolveTtsStreamMode();
+  if (mode === "off") return false;
+  if (mode === "on") return isFluxTtsModel(model);
+  // auto: stream Flux (low TTFA); Aura stays on REST mp3.
+  return isFluxTtsModel(model);
+}
+
 export function describeTtsConfig(): {
   engine: string;
   resolved: string;
   voice: string;
   rate: number | string;
   hasDeepgram: boolean;
+  stream: boolean;
 } {
   const preferred = (process.env.VOICE_CURSOR_TTS ?? "auto").toLowerCase();
   const hasDeepgram = Boolean(deepgramKey());
@@ -234,6 +259,8 @@ export function describeTtsConfig(): {
     voice: displayVoice,
     rate: resolved === "deepgram" ? resolveDeepgramTtsSpeed() : resolveTtsRate(),
     hasDeepgram,
+    stream:
+      resolved === "deepgram" && shouldStreamDeepgramTts(resolveDeepgramTtsModel()),
   };
 }
 
@@ -741,7 +768,8 @@ export async function cancelMicSession(): Promise<void> {
 
 async function playAudioFile(filePath: string): Promise<void> {
   const stat = fs.statSync(filePath);
-  if (stat.size < 500) {
+  const minBytes = filePath.toLowerCase().endsWith(".wav") ? 200 : 500;
+  if (stat.size < minBytes) {
     throw new Error(`Generated audio too small (${stat.size} bytes): ${filePath}`);
   }
 
@@ -924,15 +952,21 @@ export async function warmTts(): Promise<void> {
       await ensurePlayHost();
     }
     if (cfg.resolved === "deepgram" && deepgramKey()) {
-      // Tiny synth to warm TLS + auth to Deepgram Speak.
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-warm-"));
-      try {
-        await synthDeepgramChunk("Hi.", path.join(tmpDir, "warm.mp3"));
-      } finally {
+      const model = resolveDeepgramTtsModel();
+      if (shouldStreamDeepgramTts(model)) {
+        // Warm TLS + Flux WS handshake (kept alive with pings).
+        await ensureFluxSession();
+      } else {
+        // Tiny synth to warm TLS + auth to Deepgram Speak REST.
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-warm-"));
         try {
-          fs.rmSync(tmpDir, { recursive: true, force: true });
-        } catch {
-          // ignore
+          await synthDeepgramChunk("Hi.", path.join(tmpDir, "warm.mp3"));
+        } finally {
+          try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+          } catch {
+            // ignore
+          }
         }
       }
     } else {
@@ -956,13 +990,41 @@ export async function warmTts(): Promise<void> {
         }
       }
     }
-    console.log(`[voice-cursor] TTS warm-up complete resolved=${cfg.resolved}`);
+    console.log(
+      `[voice-cursor] TTS warm-up complete resolved=${cfg.resolved} stream=${cfg.stream}`,
+    );
   } catch (error) {
     console.warn(
       "[voice-cursor] TTS warm-up failed:",
       error instanceof Error ? error.message : error,
     );
   }
+}
+
+let fluxSession: FluxTtsSession | null = null;
+
+async function ensureFluxSession(): Promise<FluxTtsSession> {
+  const key = deepgramKey();
+  if (!key) throw new Error("DEEPGRAM_API_KEY not set");
+  const model = resolveDeepgramTtsModel();
+  const speed = resolveDeepgramTtsSpeed();
+  const configKey = `${model}|${speed}`;
+  if (fluxSession && fluxSession.configKey === configKey) {
+    await fluxSession.ensureConnected();
+    return fluxSession;
+  }
+  if (fluxSession) {
+    try {
+      await fluxSession.close();
+    } catch {
+      // ignore
+    }
+    fluxSession = null;
+  }
+  const session = new FluxTtsSession({ apiKey: key, model, speed });
+  await session.ensureConnected();
+  fluxSession = session;
+  return session;
 }
 
 async function synthDeepgramChunk(text: string, outPath: string): Promise<string> {
@@ -1003,7 +1065,115 @@ async function synthDeepgramChunk(text: string, outPath: string): Promise<string
   return outPath;
 }
 
-async function speakWithDeepgram(text: string): Promise<{
+/**
+ * Flux WebSocket streaming: play WAV segments as PCM arrives (low first-audio latency).
+ * Falls back to REST batch if the socket path fails.
+ */
+async function speakWithDeepgramFluxStream(text: string): Promise<{
+  engine: string;
+  voice: string;
+  firstAudioMs?: number;
+  totalMs: number;
+}> {
+  const voice = resolveDeepgramTtsModel();
+  const speed = resolveDeepgramTtsSpeed();
+  const totalStarted = Date.now();
+  let firstAudioMs: number | undefined;
+
+  // ~120ms first segment so playback can start before the full reply is synthesized.
+  const bytesPerSec = FLUX_TTS_SAMPLE_RATE * 2; // mono linear16
+  const firstThreshold = Math.floor(bytesPerSec * 0.12);
+  const nextThreshold = Math.floor(bytesPerSec * 0.4);
+
+  console.log(
+    `[voice-cursor] deepgram-tts-ws speak chars=${text.length} voice=${voice} speed=${speed} sampleRate=${FLUX_TTS_SAMPLE_RATE}`,
+  );
+
+  const session = await ensureFluxSession();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-dg-ws-"));
+  let pcmBuf = Buffer.alloc(0);
+  let chunkIndex = 0;
+  let playChain: Promise<void> = Promise.resolve();
+  let playError: Error | undefined;
+
+  const enqueuePlay = (wavPath: string, index: number, bytes: number) => {
+    playChain = playChain.then(async () => {
+      if (playError) return;
+      try {
+        if (firstAudioMs === undefined) {
+          firstAudioMs = Date.now() - totalStarted;
+          console.log(
+            `[voice-cursor] deepgram-tts-ws firstAudioMs=${firstAudioMs} chunk=${index} bytes=${bytes}`,
+          );
+        }
+        await playAudioFile(wavPath);
+      } catch (error) {
+        playError = error instanceof Error ? error : new Error(String(error));
+        throw playError;
+      } finally {
+        try {
+          fs.unlinkSync(wavPath);
+        } catch {
+          // ignore
+        }
+      }
+    });
+  };
+
+  const emitSegments = (flushAll: boolean) => {
+    while (true) {
+      const threshold = chunkIndex === 0 ? firstThreshold : nextThreshold;
+      if (!flushAll && pcmBuf.length < threshold) break;
+      if (pcmBuf.length === 0) break;
+      // Keep even byte length for 16-bit samples.
+      let take = flushAll ? pcmBuf.length : threshold;
+      if (take % 2 === 1) take -= 1;
+      if (take <= 0) break;
+      if (!flushAll && take < threshold) break;
+
+      const segment = pcmBuf.subarray(0, take);
+      pcmBuf = pcmBuf.subarray(take);
+      const index = chunkIndex++;
+      const wavPath = path.join(tmpDir, `chunk-${index}.wav`);
+      writePcmWavFile(wavPath, segment);
+      console.log(
+        `[voice-cursor] deepgram-tts-ws segment=${index} pcmBytes=${segment.length} flush=${flushAll}`,
+      );
+      enqueuePlay(wavPath, index, segment.length);
+    }
+  };
+
+  try {
+    const turn = await session.speakTurn(text, (pcm) => {
+      pcmBuf = Buffer.concat([pcmBuf, pcm]);
+      emitSegments(false);
+    });
+    emitSegments(true);
+    await playChain;
+    if (playError) throw playError;
+    if (chunkIndex === 0 || (firstAudioMs === undefined && turn.audioBytes === 0)) {
+      throw new Error("Flux TTS produced no audio");
+    }
+    const totalMs = Date.now() - totalStarted;
+    console.log(
+      `[voice-cursor] deepgram-tts-ws totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} firstByteMs=${turn.firstByteMs ?? "n/a"} audioBytes=${turn.audioBytes} segments=${chunkIndex}`,
+    );
+    return {
+      engine: "deepgram-tts-ws",
+      voice,
+      firstAudioMs,
+      totalMs,
+    };
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function speakWithDeepgramRest(text: string): Promise<{
   engine: string;
   voice: string;
   firstAudioMs?: number;
@@ -1015,7 +1185,7 @@ async function speakWithDeepgram(text: string): Promise<{
   let firstAudioMs: number | undefined;
   const chunks = chunkForTts(text);
   console.log(
-    `[voice-cursor] deepgram-tts speak chunks=${chunks.length} chars=${text.length} voice=${voice} speed=${speed}`,
+    `[voice-cursor] deepgram-tts-rest speak chunks=${chunks.length} chars=${text.length} voice=${voice} speed=${speed}`,
   );
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-dg-tts-"));
@@ -1026,7 +1196,7 @@ async function speakWithDeepgram(text: string): Promise<{
       await synthDeepgramChunk(chunk, outPath);
       const bytes = fs.statSync(outPath).size;
       console.log(
-        `[voice-cursor] deepgram-tts chunk=${index} bytes=${bytes} voice=${voice} speed=${speed} synthMs=${Date.now() - synthStarted}`,
+        `[voice-cursor] deepgram-tts-rest chunk=${index} bytes=${bytes} voice=${voice} speed=${speed} synthMs=${Date.now() - synthStarted}`,
       );
       return outPath;
     };
@@ -1038,7 +1208,7 @@ async function speakWithDeepgram(text: string): Promise<{
         i + 1 < chunks.length ? synthChunk(chunks[i + 1], i + 1) : null;
       if (firstAudioMs === undefined) {
         firstAudioMs = Date.now() - totalStarted;
-        console.log(`[voice-cursor] deepgram-tts firstAudioMs=${firstAudioMs}`);
+        console.log(`[voice-cursor] deepgram-tts-rest firstAudioMs=${firstAudioMs}`);
       }
       await playAudioFile(audioFilePath);
       try {
@@ -1057,9 +1227,39 @@ async function speakWithDeepgram(text: string): Promise<{
 
   const totalMs = Date.now() - totalStarted;
   console.log(
-    `[voice-cursor] deepgram-tts totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"}`,
+    `[voice-cursor] deepgram-tts-rest totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"}`,
   );
   return { engine: "deepgram-tts", voice, firstAudioMs, totalMs };
+}
+
+async function speakWithDeepgram(text: string): Promise<{
+  engine: string;
+  voice: string;
+  firstAudioMs?: number;
+  totalMs: number;
+}> {
+  const model = resolveDeepgramTtsModel();
+  if (shouldStreamDeepgramTts(model)) {
+    try {
+      return await speakWithDeepgramFluxStream(text);
+    } catch (error) {
+      console.warn(
+        "[voice-cursor] Flux WebSocket TTS failed, falling back to REST:",
+        error instanceof Error ? error.message : error,
+      );
+      // Drop broken session so the next attempt reconnects.
+      if (fluxSession) {
+        try {
+          await fluxSession.close();
+        } catch {
+          // ignore
+        }
+        fluxSession = null;
+      }
+      return await speakWithDeepgramRest(text);
+    }
+  }
+  return speakWithDeepgramRest(text);
 }
 
 async function speakWithEdge(text: string): Promise<{
