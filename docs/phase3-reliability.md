@@ -13,7 +13,8 @@
 |---|---|---|
 | `voiceCursor.autoStartService` | `true` | Spawn local service if unreachable |
 | `voiceCursor.oneShotNewChat` | `false` | `true` = new chat each turn; `false` = same thread after first open |
-| `voiceCursor.confirmTranscript` | `true` | Confirm before send |
+| `voiceCursor.confirmTranscript` | `false` | Confirm before send (off by default for faster turns) |
+| `voiceCursor.quietUi` | `true` | Skip routine success toasts during push-to-talk |
 | `voiceCursor.serviceUrl` | `http://127.0.0.1:4738` | Service base URL |
 
 ## Notes

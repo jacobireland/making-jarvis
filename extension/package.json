@@ -87,8 +87,13 @@
         },
         "voiceCursor.confirmTranscript": {
           "type": "boolean",
+          "default": false,
+          "description": "Ask for confirmation before sending a transcript to the Agent (default off for faster voice turns)"
+        },
+        "voiceCursor.quietUi": {
+          "type": "boolean",
           "default": true,
-          "description": "Ask for confirmation before sending a transcript to the Agent"
+          "description": "When true, skip routine success toasts during push-to-talk (errors and the sticky listening UI still show)"
         },
         "voiceCursor.submitChord": {
           "type": "string",

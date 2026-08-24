@@ -15,9 +15,10 @@ Fixed 7s listen is no longer required for normal use.
 - `Voice Cursor: One-Shot Talk` — start + prompt you to stop (helper)
 
 ## Settings
-- `voiceCursor.confirmTranscript` — confirm before send (default true)
+- `voiceCursor.confirmTranscript` — confirm before send (default **false**)
 - `voiceCursor.oneShotNewChat` — new Agent chat each turn (default **false**; first turn opens one chat, then same thread)
 - `voiceCursor.autoStartService` — spawn voice-service if down (default true)
+- `voiceCursor.quietUi` — skip routine success toasts during PTT (default true)
 
 ## STT / TTS
 - STT: Deepgram Nova (Whisper / Windows fallbacks)

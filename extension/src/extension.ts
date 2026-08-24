@@ -255,6 +255,8 @@ export function activate(context: vscode.ExtensionContext): void {
           newChat,
           submitCandidates: getSubmitCandidates(),
           submitChord: getSubmitChord(),
+          confirmTranscript: isConfirmTranscriptEnabled(),
+          quietUi: isQuietUiEnabled(),
           log: (msg) => output.appendLine(msg),
           setStatus,
           onListening: () => {
@@ -347,9 +349,7 @@ export function activate(context: vscode.ExtensionContext): void {
       output.show(true);
       try {
         const newChat = resolveNewChat();
-        const confirmTranscript = vscode.workspace
-          .getConfiguration("voiceCursor")
-          .get<boolean>("confirmTranscript", true);
+        const confirmTranscript = isConfirmTranscriptEnabled();
         await stopPushToTalkAndSend({
           serviceBase: serviceBase(),
           extensionPath,
@@ -357,6 +357,7 @@ export function activate(context: vscode.ExtensionContext): void {
           submitCandidates: getSubmitCandidates(),
           submitChord: getSubmitChord(),
           confirmTranscript,
+          quietUi: isQuietUiEnabled(),
           log: (msg) => output.appendLine(msg),
           setStatus,
           onInjected: (openedWith) => noteChatOpened(openedWith),
@@ -384,7 +385,9 @@ export function activate(context: vscode.ExtensionContext): void {
       status.command = "voiceCursor.startListening";
       status.tooltip = "Voice Cursor: Start Listening";
       status.text = "$(unmute) Voice Cursor: idle";
-      vscode.window.showInformationMessage("Voice Cursor: listening cancelled");
+      if (!isQuietUiEnabled()) {
+        void vscode.window.showInformationMessage("Voice Cursor: listening cancelled");
+      }
     }),
   );
 
@@ -461,6 +464,18 @@ function isAutoStartEnabled(): boolean {
   return vscode.workspace
     .getConfiguration("voiceCursor")
     .get<boolean>("autoStartService", true);
+}
+
+function isConfirmTranscriptEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("voiceCursor")
+    .get<boolean>("confirmTranscript", false);
+}
+
+function isQuietUiEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("voiceCursor")
+    .get<boolean>("quietUi", true);
 }
 
 /**
@@ -580,8 +595,8 @@ function handleEvent(event: VoiceCursorEvent): void {
     output.appendLine(
       `[agent_response] spokenChars=${event.spokenText.length} rawChars=${event.text.length} ${event.spokenText.slice(0, 160)}`,
     );
-    // Skip toast during push-to-talk — it adds noise while TTS is starting.
-    if (!oneShotRunning) {
+    // Skip toast during push-to-talk / when quiet UI is on — status bar + TTS are enough.
+    if (!oneShotRunning && !isQuietUiEnabled()) {
       void vscode.window.showInformationMessage(
         `Voice Cursor captured: ${event.spokenText.slice(0, 120)}`,
       );

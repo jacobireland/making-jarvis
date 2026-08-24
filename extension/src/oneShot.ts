@@ -40,6 +40,7 @@ export async function stopPushToTalkAndSend(options: {
   newChat: boolean;
   submitCandidates: string[];
   confirmTranscript: boolean;
+  quietUi?: boolean;
   submitChord?: SubmitChord;
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
@@ -51,6 +52,7 @@ export async function stopPushToTalkAndSend(options: {
     newChat,
     submitCandidates,
     confirmTranscript,
+    quietUi = true,
     submitChord = "enter",
     setStatus,
     onInjected,
@@ -134,7 +136,9 @@ export async function stopPushToTalkAndSend(options: {
     return;
   }
 
-  vscode.window.showInformationMessage("Sent to Agent. Waiting for reply…");
+  if (!quietUi) {
+    void vscode.window.showInformationMessage("Sent to Agent. Waiting for reply…");
+  }
   const waitStarted = Date.now();
   const captured = await waitForAgentResponseFast(base, {
     sinceIso,
@@ -214,7 +218,9 @@ export async function stopPushToTalkAndSend(options: {
     `[ptt] tts engine=${tts.engine} firstAudioMs=${tts.firstAudioMs ?? "n/a"} totalMs=${tts.totalMs ?? "n/a"} (firstAudioMs = delay before sound; totalMs includes full playback) waitMs=${Date.now() - ttsWaitStarted}`,
   );
   setStatus("idle", "done");
-  vscode.window.showInformationMessage("Voice Cursor: done.");
+  if (!quietUi) {
+    void vscode.window.showInformationMessage("Voice Cursor: done.");
+  }
 }
 
 /** One-shot = start listen, sticky UI until status-bar Stop & Send (or Cancel). */
@@ -225,6 +231,8 @@ export async function runOneShotTalk(options: {
   newChat: boolean;
   submitCandidates: string[];
   submitChord?: SubmitChord;
+  confirmTranscript?: boolean;
+  quietUi?: boolean;
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
   /** Called after mic starts so the extension can point the status bar at Stop. */
@@ -262,7 +270,8 @@ export async function runOneShotTalk(options: {
     newChat: options.newChat,
     submitCandidates: options.submitCandidates,
     submitChord: options.submitChord,
-    confirmTranscript: true,
+    confirmTranscript: options.confirmTranscript ?? false,
+    quietUi: options.quietUi ?? true,
     log: options.log,
     setStatus: options.setStatus,
     onInjected: options.onInjected,
