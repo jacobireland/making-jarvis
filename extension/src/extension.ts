@@ -368,9 +368,9 @@ export function activate(context: vscode.ExtensionContext): void {
   connectSocket();
   output.appendLine("Voice Cursor activated (push-to-talk).");
   output.appendLine("1) Start service: npm run service");
-  output.appendLine("2) Voice Cursor: Start Listening");
-  output.appendLine("3) Voice Cursor: Stop Listening & Send");
-  output.appendLine("   (status bar toggles start → stop/send)");
+  output.appendLine("2) Start Listening or One-Shot Talk");
+  output.appendLine("3) While listening: click status-bar mic to Stop & Send");
+  output.appendLine("   (sticky notification also stays up — Cancel there to abort)");
 }
 
 export function deactivate(): void {
