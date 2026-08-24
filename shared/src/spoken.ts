@@ -25,6 +25,9 @@ export function toSpokenText(raw: string, options?: { maxChars?: number }): stri
   // Drop obvious diff hunks / file path dumps.
   text = text.replace(/^diff --git[\s\S]*?(?=\n\S|$)/gm, "\n");
   text = text.replace(/^[±+\-]{3}\s.+$/gm, "");
+  // Clause dashes should pause like periods (Flux treats "." as a sentence break).
+  // Keep hyphenated words: well-known, end-of-utterance.
+  text = dashesToSentenceBreaks(text);
 
   // Build spoken units from paragraphs / list items so boundaries become pauses.
   const blocks = text
@@ -125,9 +128,17 @@ export function toSpokenThoughtText(
   return spoken === "Done." ? "" : spoken;
 }
 
+/** Turn em/en dashes and spaced hyphens into sentence periods for a full TTS pause. */
+function dashesToSentenceBreaks(text: string): string {
+  return text
+    .replace(/\s*[—–]+\s*/g, ". ")
+    .replace(/\s+-{1,3}\s+/g, ". ")
+    .replace(/(\S)--(\S)/g, "$1. $2");
+}
+
 /** Append one speakable unit, ensuring it ends with sentence punctuation for TTS pauses. */
 function pushSpokenUnit(out: string[], unit: string): void {
-  let s = unit.replace(/\s+/g, " ").trim();
+  let s = dashesToSentenceBreaks(unit.replace(/\s+/g, " ").trim());
   if (!s) return;
   // "What they learn:" → spoken pause before the list items.
   if (/[:;]$/.test(s)) s = `${s.slice(0, -1).trim()}.`;
