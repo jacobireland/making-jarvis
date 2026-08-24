@@ -106,6 +106,7 @@ async function drainSpeakQueue(): Promise<void> {
     console.log(
       `[voice-cursor] speak done source=${job.source} engine=${result.engine} firstAudioMs=${result.firstAudioMs ?? "n/a"} totalMs=${result.totalMs ?? Date.now() - started}`,
     );
+    speechBusy = false;
     pushEvent({
       type: "tts_done",
       ok: true,
@@ -121,6 +122,7 @@ async function drainSpeakQueue(): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[voice-cursor] speak failed source=${job.source}: ${message}`);
+    speechBusy = false;
     pushEvent({
       type: "tts_done",
       ok: false,

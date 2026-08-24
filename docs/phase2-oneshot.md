@@ -4,7 +4,8 @@
 1. **Start Listening** (or click status bar)
 2. Speak as long as you want
 3. **Pause** — Deepgram Flux auto-sends on end-of-utterance. Or click **Stop Listening & Send**
-4. Confirm transcript (optional setting) → Agent → spoken reply
+4. Optional confirm transcript → Agent → spoken reply
+5. Listening **starts again** until you turn it off
 
 WAV click-to-send is still the fallback when Flux listen isn't available.
 
@@ -20,6 +21,7 @@ WAV click-to-send is still the fallback when Flux listen isn't available.
 - `voiceCursor.autoStartService` — spawn voice-service if down (default true)
 - `voiceCursor.quietUi` — skip routine success toasts during PTT (default true)
 - `voiceCursor.autoEndUtterance` — pause-to-send via Deepgram Flux (default **true**; click Stop still works)
+- `voiceCursor.autoRearmListening` — after the spoken reply, start listening again (default **true**)
 
 ## STT / TTS
 - STT: **Deepgram Flux** streaming listen (`/v2/listen`) for end-of-utterance; Nova WAV if streaming isn't available (optional OpenAI Whisper, then Windows, as fallbacks)

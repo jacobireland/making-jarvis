@@ -5,11 +5,13 @@
 2. **Same-thread chat** — `voiceCursor.oneShotNewChat` defaults to **false**: first turn this session opens one Agent chat, later turns stay in that thread. Set it **true** for a new chat every turn.
 3. **Speak thinking blocks** — `afterAgentThought` speaks the **last sentence** of each Thought (the usual chat preview line). Set `VOICE_CURSOR_SPEAK_FULL_THOUGHTS=1` for the full text; disable entirely with `VOICE_CURSOR_SPEAK_THOUGHTS=0`.
 4. **Pause-to-send (VAD)** — with a Deepgram key, Start Listening streams the mic to Flux STT. A pause auto-sends (`EndOfTurn`). Click Stop & Send still works. Set `voiceCursor.autoEndUtterance` to **false** for classic click-to-send. Disable in the service with `VOICE_CURSOR_VAD=0`.
+5. **Auto-rearm** — after the spoken reply finishes, listening starts again (`voiceCursor.autoRearmListening`, default on). Click the status-bar item to turn Voice Cursor off.
 
 ## Flow
-1. Click the status-bar **Voice Cursor** item to turn listening **on** (idle) or **off** (while armed)
+1. Click the status-bar **Voice Cursor** item to turn listening **on**
 2. Speak → **pause to send**, or status-bar click → **Send now**
 3. Transcript → inject into Agent → spoken thoughts → spoken final reply
+4. Listening **arms again** until you click to turn it **off**
 
 ## Settings
 | Setting | Default | Meaning |
@@ -19,6 +21,7 @@
 | `voiceCursor.confirmTranscript` | `false` | Confirm before send (off by default for faster turns) |
 | `voiceCursor.quietUi` | `true` | Skip routine success toasts during push-to-talk |
 | `voiceCursor.autoEndUtterance` | `true` | Auto-send when Flux detects end of utterance |
+| `voiceCursor.autoRearmListening` | `true` | After spoken reply, start listening again |
 | `voiceCursor.serviceUrl` | `http://127.0.0.1:4738` | Service base URL |
 
 ## Env (service)
@@ -38,5 +41,5 @@
 - You can still run `npm run service` yourself; the extension will reuse it and will not double-start.
 - If the extension started the service, it stops that managed process on deactivate.
 - Thought and final reply TTS are queued so neither drops; PTT waits only for the final-reply `tts_done`.
-- Pause-to-send does **not** listen during TTS (barge-in is still queued). After the reply, click Start Listening again.
+- Pause-to-send does **not** listen during TTS (barge-in is still queued). After the reply, listening auto-rearms (`voiceCursor.autoRearmListening`).
 - If Flux listen or the PCM capture host fails, the service falls back to WAV click-to-send for that turn.

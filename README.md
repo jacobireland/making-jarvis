@@ -24,8 +24,8 @@ In Cursor (open the repo folder that contains `.cursor/hooks.json`):
 1. **Developer: Install Extension from Location…** → select `extension/`
 2. Reload if needed — the extension **auto-starts** the voice service when possible
 3. Command Palette → **Voice Cursor: Start Listening**, or click **Voice Cursor: idle** in the status bar to turn listening on
-4. Speak, then **pause** (Flux auto-sends). Click the status-bar item to **turn listening off** or **send now**.
-5. Confirm transcript if prompted; follow-ups stay in the **same Agent chat**
+4. Speak, then **pause** (Flux auto-sends). After the spoken reply, listening **comes back on**. Click the status-bar item to **turn listening off**, or **send now**.
+5. Follow-ups stay in the **same Agent chat**
 
 Optional manual service: `npm run service` (leave running). Disable auto-start via `voiceCursor.autoStartService`.
 

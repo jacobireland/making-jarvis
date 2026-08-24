@@ -97,6 +97,11 @@
           "default": true,
           "description": "When true, auto-send when Deepgram Flux detects end of utterance (a pause). Click Stop & Send still works. Disable for classic click-to-send push-to-talk."
         },
+        "voiceCursor.autoRearmListening": {
+          "type": "boolean",
+          "default": true,
+          "description": "After the spoken reply finishes, automatically start listening again. Click the status-bar item to turn Voice Cursor off. Disable to require a click before each turn."
+        },
         "voiceCursor.submitChord": {
           "type": "string",
           "default": "enter",

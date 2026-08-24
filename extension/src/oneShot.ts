@@ -5,6 +5,10 @@ import { showStickyListeningUi } from "./listenUi";
 import { createTimedLogger } from "./log";
 import type { SubmitChord } from "./inject";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function startPushToTalk(options: {
   serviceBase: string;
   log: (message: string) => void;
@@ -16,26 +20,36 @@ export async function startPushToTalk(options: {
   options.setStatus("listening", autoEnd ? "pause to send" : "push-to-talk");
   options.log("[ptt] starting mic");
   try {
-    const res = await fetch(`${base}/stt/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ maxSeconds: 120, autoEnd }),
-    });
-    const body = (await res.json()) as {
-      ok?: boolean;
-      error?: string;
-      id?: string;
-      autoEnd?: boolean;
-      mode?: string;
-    };
-    if (!res.ok || !body.ok) {
-      throw new Error(body.error ?? `STT start HTTP ${res.status}`);
+    let lastError = "STT start failed";
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const res = await fetch(`${base}/stt/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxSeconds: 120, autoEnd }),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        id?: string;
+        autoEnd?: boolean;
+        mode?: string;
+      };
+      if (res.status === 409) {
+        lastError = body.error ?? "speech pipeline busy";
+        options.log(`[ptt] start busy attempt=${attempt + 1} ${lastError}`);
+        await sleep(80);
+        continue;
+      }
+      if (!res.ok || !body.ok) {
+        throw new Error(body.error ?? `STT start HTTP ${res.status}`);
+      }
+      const resolvedAutoEnd = body.autoEnd === true;
+      options.log(
+        `[ptt] listening id=${body.id} mode=${body.mode ?? "?"} autoEnd=${resolvedAutoEnd}`,
+      );
+      return { ok: true, autoEnd: resolvedAutoEnd, mode: body.mode };
     }
-    const resolvedAutoEnd = body.autoEnd === true;
-    options.log(
-      `[ptt] listening id=${body.id} mode=${body.mode ?? "?"} autoEnd=${resolvedAutoEnd}`,
-    );
-    return { ok: true, autoEnd: resolvedAutoEnd, mode: body.mode };
+    throw new Error(lastError);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     options.setStatus("error", message);
@@ -55,6 +69,8 @@ export async function stopPushToTalkAndSend(options: {
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
   onInjected?: (openedWith?: string) => void;
+  /** When true, empty transcripts stay quiet so a hands-free session can rearm. */
+  quietEmpty?: boolean;
 }): Promise<void> {
   const {
     serviceBase,
@@ -66,6 +82,7 @@ export async function stopPushToTalkAndSend(options: {
     submitChord = "enter",
     setStatus,
     onInjected,
+    quietEmpty = false,
   } = options;
   const turnStarted = Date.now();
   const log = createTimedLogger(options.log, { startedAt: turnStarted });
@@ -104,7 +121,10 @@ export async function stopPushToTalkAndSend(options: {
 
   if (!transcript) {
     setStatus("idle", "no speech detected");
-    vscode.window.showWarningMessage("Voice Cursor: no speech detected. Try again.");
+    log("[ptt] no speech detected");
+    if (!quietEmpty) {
+      vscode.window.showWarningMessage("Voice Cursor: no speech detected. Try again.");
+    }
     return;
   }
 
