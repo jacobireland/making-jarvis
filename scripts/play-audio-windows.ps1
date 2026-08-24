@@ -1,4 +1,4 @@
-# Play an audio file to completion using WPF MediaPlayer.
+# Play mp3/wav via MCI (starts quickly; blocks until finished).
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File play-audio-windows.ps1 -Path C:\temp\out.mp3
 
@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
 
 $Path = [System.IO.Path]::GetFullPath($Path)
 if (-not (Test-Path -LiteralPath $Path)) {
@@ -19,40 +20,40 @@ if ($len -lt 500) {
   Write-Error "Audio file too small ($len bytes): $Path"
 }
 
-Add-Type -AssemblyName PresentationCore
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
 
-$player = New-Object System.Windows.Media.MediaPlayer
+public static class VoiceCursorMciPlay {
+  [DllImport("winmm.dll", CharSet = CharSet.Ansi)]
+  public static extern int mciSendString(string command, StringBuilder returnValue, int returnLength, IntPtr callback);
+}
+"@
+
+function Invoke-Mci([string]$command) {
+  $buf = New-Object System.Text.StringBuilder 256
+  $code = [VoiceCursorMciPlay]::mciSendString($command, $buf, $buf.Capacity, [IntPtr]::Zero)
+  if ($code -ne 0) {
+    throw "MCI failed ($code): $command"
+  }
+  return $buf.ToString()
+}
+
 try {
-  # MediaPlayer requires a URI; use file:/// form.
-  $full = (Resolve-Path -LiteralPath $Path).Path
-  $uri = [Uri]::new($full)
-  $player.Volume = 1.0
-  $player.Open($uri)
+  try { [void][VoiceCursorMciPlay]::mciSendString("close vcmedia", $null, 0, [IntPtr]::Zero) } catch {}
 
-  $opened = $false
-  for ($i = 0; $i -lt 200; $i++) {
-    if ($player.NaturalDuration.HasTimeSpan) {
-      $opened = $true
-      break
-    }
-    Start-Sleep -Milliseconds 50
-  }
-  if (-not $opened) {
-    Write-Error "MediaPlayer failed to open audio (no duration): $Path"
-  }
+  # mpegvideo alias handles mp3 on most Windows installs.
+  Invoke-Mci "open `"$Path`" type mpegvideo alias vcmedia"
+  $openMs = $sw.ElapsedMilliseconds
 
-  $durationMs = [Math]::Ceiling($player.NaturalDuration.TimeSpan.TotalMilliseconds)
-  if ($durationMs -lt 80) {
-    Write-Error "Audio duration too short ($durationMs ms): $Path"
-  }
+  # play ... wait blocks until playback completes.
+  Invoke-Mci "play vcmedia wait"
+  $totalMs = $sw.ElapsedMilliseconds
 
-  $player.Play()
-
-  # Wait for playback to finish (duration + small buffer).
-  Start-Sleep -Milliseconds ($durationMs + 500)
-
-  try { $player.Stop() } catch {}
-  Write-Output ("ok bytes=" + $len + " durationMs=" + $durationMs)
-} finally {
-  try { $player.Close() } catch {}
+  Invoke-Mci "close vcmedia"
+  Write-Output ("ok bytes=" + $len + " openMs=" + $openMs + " totalMs=" + $totalMs)
+} catch {
+  try { [void][VoiceCursorMciPlay]::mciSendString("close vcmedia", $null, 0, [IntPtr]::Zero) } catch {}
+  throw
 }

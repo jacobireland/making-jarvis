@@ -8,7 +8,7 @@ import {
   type VoiceCursorEvent,
   type VoiceCursorState,
 } from "@voice-cursor/shared";
-import { listenOnce, speakText, describeSttConfig, describeTtsConfig } from "./speech";
+import { listenOnce, speakText, describeSttConfig, describeTtsConfig, warmTts } from "./speech";
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
@@ -288,4 +288,5 @@ server.listen(PORT, HOST, () => {
   console.log(`[voice-cursor] websocket ws://${HOST}:${PORT}/ws`);
   console.log(`[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved}`);
   console.log(`[voice-cursor] TTS engine=${tts.engine} voice=${tts.voice}`);
+  void warmTts();
 });

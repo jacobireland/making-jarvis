@@ -115,11 +115,11 @@ async function playAudioFile(filePath: string): Promise<void> {
   if (process.platform === "win32") {
     const script = resolveRepoScript("play-audio-windows.ps1");
     if (!script) throw new Error("scripts/play-audio-windows.ps1 not found");
+    const playStarted = Date.now();
     try {
       const { stdout, stderr } = await execFileAsync(
         "powershell.exe",
         [
-          "-STA",
           "-NoProfile",
           "-ExecutionPolicy",
           "Bypass",
@@ -138,7 +138,9 @@ async function playAudioFile(filePath: string): Promise<void> {
       if (!/ok /i.test(detail)) {
         throw new Error(`Playback did not confirm success: ${detail || "(empty output)"}`);
       }
-      console.log(`[voice-cursor] playback ${detail}`);
+      console.log(
+        `[voice-cursor] playback ${detail} wallMs=${Date.now() - playStarted}`,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Audio playback failed: ${message}`);
@@ -160,21 +162,54 @@ async function playAudioFile(filePath: string): Promise<void> {
   }
 }
 
-async function speakWithEdge(text: string): Promise<{ engine: string; voice: string }> {
-  const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
+type EdgeClientCache = { voice: string; tts: MsEdgeTTS };
+let edgeClientCache: EdgeClientCache | null = null;
+
+async function getEdgeClient(voice: string): Promise<MsEdgeTTS> {
+  if (edgeClientCache?.voice === voice) return edgeClientCache.tts;
+  const started = Date.now();
   const tts = new MsEdgeTTS();
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+  edgeClientCache = { voice, tts };
+  console.log(
+    `[voice-cursor] edge-tts metadata ready voice=${voice} ms=${Date.now() - started}`,
+  );
+  return tts;
+}
+
+/** Optional warm-up so the first spoken reply is faster. */
+export async function warmTts(): Promise<void> {
+  const preferred = (process.env.VOICE_CURSOR_TTS ?? "edge").toLowerCase();
+  if (preferred === "windows") return;
+  const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
+  try {
+    await getEdgeClient(voice);
+  } catch (error) {
+    console.warn(
+      "[voice-cursor] TTS warm-up failed:",
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
+async function speakWithEdge(text: string): Promise<{ engine: string; voice: string }> {
+  const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
+  const totalStarted = Date.now();
+  const tts = await getEdgeClient(voice);
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-tts-"));
   try {
     for (const chunk of chunkForTts(text)) {
+      const synthStarted = Date.now();
       // msedge-tts injects this string into SSML — escape XML specials.
       const { audioFilePath } = await tts.toFile(tmpDir, escapeXml(chunk));
+      const synthMs = Date.now() - synthStarted;
       if (!fs.existsSync(audioFilePath)) {
         throw new Error(`Edge TTS did not write audio file for voice=${voice}`);
       }
+      const bytes = fs.statSync(audioFilePath).size;
       console.log(
-        `[voice-cursor] edge-tts wrote ${audioFilePath} (${fs.statSync(audioFilePath).size} bytes) voice=${voice}`,
+        `[voice-cursor] edge-tts wrote ${audioFilePath} (${bytes} bytes) voice=${voice} synthMs=${synthMs}`,
       );
       await playAudioFile(audioFilePath);
       try {
@@ -191,6 +226,7 @@ async function speakWithEdge(text: string): Promise<{ engine: string; voice: str
     }
   }
 
+  console.log(`[voice-cursor] edge-tts totalMs=${Date.now() - totalStarted}`);
   return { engine: "edge-tts", voice };
 }
 
