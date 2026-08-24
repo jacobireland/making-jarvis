@@ -42,7 +42,9 @@ export async function diagnoseCapture(serviceBase: string): Promise<DiagnoseRepo
   }
 
   if (report.serviceError) {
-    report.guidance.push("Voice service is not reachable. Run `npm run service` in the repo root.");
+    report.guidance.push(
+      "Voice service is not reachable. With auto-start enabled, use Voice Cursor: Reconnect Voice Service (or run `npm run build` then reload). Or start manually: `npm run service`.",
+    );
   }
   if (!report.hooksJsonExists || !report.relayExists) {
     report.guidance.push("Missing `.cursor/hooks.json` or relay script. Pull latest PR branch.");

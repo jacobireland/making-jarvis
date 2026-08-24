@@ -2,14 +2,14 @@
 
 Voice interface to the **existing Cursor Agent**. Cursor remains responsible for coding; this project only handles microphone → prompt injection → response capture → speech.
 
-## Current status: Phase 2 (one-shot talk)
+## Current status: Phase 3 (reliability + same-thread chat)
 
 | Piece | Role |
 |---|---|
-| `extension/` | One-Shot Talk, inject/auto-submit, capture display |
-| `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Deepgram/Whisper STT + Deepgram/Edge TTS |
+| `extension/` | Push-to-talk, auto-start service, inject into Agent (same-thread by default) |
+| `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Deepgram STT/TTS (Flux WebSocket streaming) |
 | `.cursor/hooks/` | `afterAgentResponse` → service |
-| `scripts/` | Windows Enter / STT / TTS helpers |
+| `scripts/` | Windows Enter / PCM play / STT helpers |
 | `shared/` | Event types + `toSpokenText()` |
 
 ## Quick start (Windows)
@@ -17,17 +17,19 @@ Voice interface to the **existing Cursor Agent**. Cursor remains responsible for
 ```powershell
 npm install
 npm run build
-npm run service
 ```
 
 In Cursor (open the repo folder that contains `.cursor/hooks.json`):
 
 1. **Developer: Install Extension from Location…** → select `extension/`
-2. Command Palette → **Voice Cursor: Start Listening**
-3. Speak, then **Voice Cursor: Stop Listening & Send**
-4. Confirm transcript if prompted, wait for spoken reply
+2. Reload if needed — the extension **auto-starts** the voice service when possible
+3. Command Palette → **Voice Cursor: Start Listening**
+4. Speak, then **Voice Cursor: Stop Listening & Send**
+5. Confirm transcript if prompted; follow-ups stay in the **same Agent chat**
 
-Details: [docs/phase2-oneshot.md](docs/phase2-oneshot.md) · Deepgram: [docs/deepgram-setup.md](docs/deepgram-setup.md) · Phase 1: [docs/spike-phase1.md](docs/spike-phase1.md)
+Optional manual service: `npm run service` (leave running). Disable auto-start via `voiceCursor.autoStartService`.
+
+Details: [docs/phase3-reliability.md](docs/phase3-reliability.md) · [docs/phase2-oneshot.md](docs/phase2-oneshot.md) · Deepgram: [docs/deepgram-setup.md](docs/deepgram-setup.md)
 
 ## Design constraints
 

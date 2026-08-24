@@ -43,6 +43,7 @@ export async function stopPushToTalkAndSend(options: {
   submitChord?: SubmitChord;
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
+  onInjected?: (openedWith?: string) => void;
 }): Promise<void> {
   const {
     serviceBase,
@@ -52,6 +53,7 @@ export async function stopPushToTalkAndSend(options: {
     confirmTranscript,
     submitChord = "enter",
     setStatus,
+    onInjected,
   } = options;
   const turnStarted = Date.now();
   const log = createTimedLogger(options.log, { startedAt: turnStarted });
@@ -123,6 +125,7 @@ export async function stopPushToTalkAndSend(options: {
       newChat,
       extensionPath,
     });
+    onInjected?.(injectResult.openedWith);
     log(`[ptt] inject=${JSON.stringify(injectResult)}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -226,6 +229,7 @@ export async function runOneShotTalk(options: {
   setStatus: (state: string, detail?: string) => void;
   /** Called after mic starts so the extension can point the status bar at Stop. */
   onListening?: () => void;
+  onInjected?: (openedWith?: string) => void;
 }): Promise<void> {
   const started = await startPushToTalk({
     serviceBase: options.serviceBase,
@@ -261,5 +265,6 @@ export async function runOneShotTalk(options: {
     confirmTranscript: true,
     log: options.log,
     setStatus: options.setStatus,
+    onInjected: options.onInjected,
   });
 }

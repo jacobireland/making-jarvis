@@ -2,7 +2,7 @@
   "name": "voice-cursor",
   "displayName": "Voice Cursor",
   "description": "Voice interface to the existing Cursor Agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "making-jarvis",
   "private": true,
   "engines": {
@@ -68,6 +68,11 @@
           "default": "http://127.0.0.1:4738",
           "description": "Base URL for the local Voice Cursor service"
         },
+        "voiceCursor.autoStartService": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the local voice-service process if it is not reachable (recommended). Disable if you always run `npm run service` yourself."
+        },
         "voiceCursor.listenSeconds": {
           "type": "number",
           "default": 7,
@@ -77,8 +82,8 @@
         },
         "voiceCursor.oneShotNewChat": {
           "type": "boolean",
-          "default": true,
-          "description": "If true, One-Shot Talk opens a new Agent chat each turn"
+          "default": false,
+          "description": "If true, open a new Agent chat every turn. If false (default), open one chat on the first turn this session, then keep follow-ups in the same thread."
         },
         "voiceCursor.confirmTranscript": {
           "type": "boolean",

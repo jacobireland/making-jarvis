@@ -8,6 +8,10 @@ import { waitForCapturedMarker } from "./proveSubmit";
 import { notifyAgentResponse, notifyTtsDone } from "./agentWait";
 import { runOneShotTalk, startPushToTalk, stopPushToTalkAndSend } from "./oneShot";
 import { showStickyListeningUi, signalListenEnd } from "./listenUi";
+import {
+  ensureVoiceService,
+  stopManagedVoiceService,
+} from "./serviceProcess";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
@@ -22,6 +26,8 @@ let extensionPath = "";
 let oneShotRunning = false;
 /** When true, Stop status-bar click only ends the sticky UI; caller runs send. */
 let deferStopToCaller = false;
+/** After first same-thread inject in this session, keep using current chat. */
+let sessionOpenedAgentChat = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionPath = context.extensionPath;
@@ -46,16 +52,19 @@ export function activate(context: vscode.ExtensionContext): void {
       setStatus("waiting_agent", "sending test prompt");
       await postJson("/utterance", { text: prompt });
       const strategy = getStrategy();
-      output.appendLine(`[inject] strategy=${strategy}`);
+      const newChat = resolveNewChat();
+      output.appendLine(`[inject] strategy=${strategy} newChat=${newChat}`);
       output.appendLine(`[inject] prompt=${prompt}`);
       try {
         const result = await injectPrompt(prompt, {
           strategy,
           submitCandidates: getSubmitCandidates(),
           submitChord: getSubmitChord(),
+          newChat,
           log: (msg) => output.appendLine(`[inject] ${msg}`),
           extensionPath,
         });
+        noteChatOpened(result.openedWith);
         output.appendLine(`[inject] result=${JSON.stringify(result)}`);
         vscode.window.showInformationMessage(
           `Voice Cursor: injected via ${result.usedStrategy} (submit=${result.submitted})`,
@@ -109,10 +118,21 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.reconnectService", async () => {
+      const ensured = await ensureVoiceService({
+        extensionPath,
+        serviceUrl: serviceBase(),
+        autoStart: isAutoStartEnabled(),
+        log: (msg) => output.appendLine(msg),
+      });
+      output.appendLine(`[service] ensure=${JSON.stringify(ensured)}`);
       connectSocket();
       const health = await getJson("/health");
       output.appendLine(`[service] health=${JSON.stringify(health)}`);
-      vscode.window.showInformationMessage("Voice Cursor: reconnected to voice service");
+      vscode.window.showInformationMessage(
+        ensured.ok
+          ? "Voice Cursor: voice service connected"
+          : "Voice Cursor: service still unreachable — run npm run build && npm run service",
+      );
     }),
   );
 
@@ -225,9 +245,7 @@ export function activate(context: vscode.ExtensionContext): void {
       oneShotRunning = true;
       output.show(true);
       try {
-        const newChat = vscode.workspace
-          .getConfiguration("voiceCursor")
-          .get<boolean>("oneShotNewChat", true);
+        const newChat = resolveNewChat();
         await runOneShotTalk({
           serviceBase: serviceBase(),
           extensionPath,
@@ -245,6 +263,7 @@ export function activate(context: vscode.ExtensionContext): void {
             status.tooltip = "Click to stop listening and send";
             status.text = "$(mic) Voice Cursor: listening (click to send)";
           },
+          onInjected: (openedWith) => noteChatOpened(openedWith),
         });
       } finally {
         deferStopToCaller = false;
@@ -327,9 +346,7 @@ export function activate(context: vscode.ExtensionContext): void {
       oneShotRunning = true;
       output.show(true);
       try {
-        const newChat = vscode.workspace
-          .getConfiguration("voiceCursor")
-          .get<boolean>("oneShotNewChat", true);
+        const newChat = resolveNewChat();
         const confirmTranscript = vscode.workspace
           .getConfiguration("voiceCursor")
           .get<boolean>("confirmTranscript", true);
@@ -342,6 +359,7 @@ export function activate(context: vscode.ExtensionContext): void {
           confirmTranscript,
           log: (msg) => output.appendLine(msg),
           setStatus,
+          onInjected: (openedWith) => noteChatOpened(openedWith),
         });
       } finally {
         oneShotRunning = false;
@@ -370,20 +388,40 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  connectSocket();
+  void bootstrapServiceAndSocket();
   void warmSendEnterHost(extensionPath).then(() => {
     output.appendLine("[inject] send-enter host warmed");
   });
   output.appendLine("Voice Cursor activated (push-to-talk).");
-  output.appendLine("1) Start service: npm run service");
+  output.appendLine(
+    isAutoStartEnabled()
+      ? "1) Voice service auto-starts if needed (or keep npm run service running)"
+      : "1) Start service: npm run service",
+  );
   output.appendLine("2) Start Listening or One-Shot Talk");
   output.appendLine("3) While listening: click status-bar mic to Stop & Send");
   output.appendLine("   (sticky notification also stays up — Cancel there to abort)");
+  output.appendLine(
+    `Chat mode: ${
+      vscode.workspace
+        .getConfiguration("voiceCursor")
+        .get<boolean>("oneShotNewChat", false)
+        ? "new Agent chat each turn"
+        : "same thread (opens one chat on first turn this session)"
+    }`,
+  );
 }
 
 export function deactivate(): void {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   socket?.close();
+  stopManagedVoiceService((msg) => {
+    try {
+      output?.appendLine(msg);
+    } catch {
+      // ignore
+    }
+  });
 }
 
 function getStrategy(): InjectionStrategy {
@@ -417,6 +455,41 @@ function serviceBase(): string {
     .getConfiguration("voiceCursor")
     .get<string>("serviceUrl", "http://127.0.0.1:4738")
     .replace(/\/$/, "");
+}
+
+function isAutoStartEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("voiceCursor")
+    .get<boolean>("autoStartService", true);
+}
+
+/**
+ * New chat each turn if `oneShotNewChat` is true.
+ * Otherwise: open one Agent chat on the first turn this session, then same thread.
+ */
+function resolveNewChat(): boolean {
+  const eachTurn = vscode.workspace
+    .getConfiguration("voiceCursor")
+    .get<boolean>("oneShotNewChat", false);
+  if (eachTurn) return true;
+  return !sessionOpenedAgentChat;
+}
+
+function noteChatOpened(openedWith?: string): void {
+  if (!openedWith) return;
+  // Any successful inject into Agent counts as "we have a thread".
+  sessionOpenedAgentChat = true;
+}
+
+async function bootstrapServiceAndSocket(): Promise<void> {
+  const ensured = await ensureVoiceService({
+    extensionPath,
+    serviceUrl: serviceBase(),
+    autoStart: isAutoStartEnabled(),
+    log: (msg) => output.appendLine(msg),
+  });
+  output.appendLine(`[service] bootstrap=${JSON.stringify(ensured)}`);
+  connectSocket();
 }
 
 function wsUrl(): string {
@@ -468,11 +541,27 @@ function connectSocket(): void {
     reconnectAttempt += 1;
     if (reconnectAttempt <= 3 || reconnectAttempt % 5 === 0) {
       output.appendLine(
-        `[ws] closed; voice service not reachable — retry in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempt}). Keep npm run service running.`,
+        `[ws] closed; voice service not reachable — retry in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempt}).` +
+          (isAutoStartEnabled()
+            ? " Auto-start will retry."
+            : " Keep npm run service running."),
       );
     }
     setStatus("error", "voice service disconnected");
-    reconnectTimer = setTimeout(connectSocket, delay);
+    reconnectTimer = setTimeout(() => {
+      void (async () => {
+        // Periodically try to bring the service back if we manage it / auto-start.
+        if (isAutoStartEnabled() && (reconnectAttempt === 1 || reconnectAttempt % 3 === 0)) {
+          await ensureVoiceService({
+            extensionPath,
+            serviceUrl: serviceBase(),
+            autoStart: true,
+            log: (msg) => output.appendLine(msg),
+          });
+        }
+        connectSocket();
+      })();
+    }, delay);
   });
 
   next.on("error", (error) => {

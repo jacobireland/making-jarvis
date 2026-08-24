@@ -44,7 +44,7 @@ export async function injectPrompt(
   },
 ): Promise<InjectResult> {
   const { strategy, log } = options;
-  const newChat = options.newChat ?? true;
+  const newChat = options.newChat ?? false;
   const submitChord: SubmitChord = options.submitChord ?? "enter";
   const details: string[] = [];
   const t0 = Date.now();

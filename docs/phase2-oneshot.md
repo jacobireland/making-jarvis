@@ -16,8 +16,11 @@ Fixed 7s listen is no longer required for normal use.
 
 ## Settings
 - `voiceCursor.confirmTranscript` — confirm before send (default true)
-- `voiceCursor.oneShotNewChat` — new Agent chat each turn (default true)
+- `voiceCursor.oneShotNewChat` — new Agent chat each turn (default **false**; first turn opens one chat, then same thread)
+- `voiceCursor.autoStartService` — spawn voice-service if down (default true)
 
 ## STT / TTS
-- STT: Windows System.Speech from recorded WAV
-- TTS: Edge `en-PH-JamesNeural` (SAPI fallback)
+- STT: Deepgram Nova (Whisper / Windows fallbacks)
+- TTS: Deepgram Flux WebSocket streaming (Edge / Windows fallbacks)
+
+See also: [phase3-reliability.md](phase3-reliability.md)
