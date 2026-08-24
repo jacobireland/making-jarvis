@@ -51,7 +51,7 @@ Health check should show:
 "tts": { "resolved": "deepgram", "voice": "flux-marcelo-en", "stream": true, "hasDeepgram": true }
 ```
 
-Service logs for a spoken reply should include `deepgram-tts-ws`, one turn per sentence, and a low `firstAudioMs` (first sentence ready — not the old ~2.5s full-reply REST wait).
+Service logs for a spoken reply should include `deepgram-tts-ws pcm-stream` and a low `firstAudioMs` (waveOut starts after ~100ms preroll — gapless, not choppy 120ms MCI clips or full-sentence waits).
 
 ## Voices / speed
 - Flux models use `/v2/speak` (`flux-…`) — **WebSocket streaming by default**

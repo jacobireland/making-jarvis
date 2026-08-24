@@ -928,6 +928,185 @@ async function playViaWarmHost(filePath: string): Promise<string> {
   });
 }
 
+type PcmPlaySession = {
+  write: (pcm: Buffer) => void;
+  end: () => Promise<{ detail: string; firstMs?: number }>;
+};
+
+type PcmHost = {
+  child: ReturnType<typeof import("node:child_process").spawn>;
+  ready: Promise<void>;
+  buffer: string;
+  session: {
+    firstMs?: number;
+    ending: null | {
+      settle: (value: { detail: string; firstMs?: number }) => void;
+      fail: (error: Error) => void;
+    };
+  } | null;
+};
+
+let pcmHost: PcmHost | null = null;
+
+async function ensurePcmHost(): Promise<PcmHost> {
+  if (pcmHost && pcmHost.child.exitCode === null) return pcmHost;
+
+  const script = resolveRepoScript("play-pcm-host.ps1");
+  if (!script) throw new Error("scripts/play-pcm-host.ps1 not found");
+
+  const { spawn } = await import("node:child_process");
+  const child = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+    {
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+
+  const host: PcmHost = {
+    child,
+    ready: Promise.resolve(),
+    buffer: "",
+    session: null,
+  };
+
+  let readyResolve: () => void = () => undefined;
+  let readyReject: (error: Error) => void = () => undefined;
+  host.ready = new Promise<void>((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+
+  const onLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    if (trimmed === "ready") {
+      readyResolve();
+      return;
+    }
+    const session = host.session;
+    if (!session) return;
+    if (/^first\b/i.test(trimmed)) {
+      const m = /(?:firstMs|ms)=(\d+)/i.exec(trimmed);
+      const n = m ? Number(m[1]) : undefined;
+      if (Number.isFinite(n)) session.firstMs = n;
+      return;
+    }
+    if (/^ok\b/i.test(trimmed)) {
+      const ending = session.ending;
+      const firstMs = session.firstMs;
+      host.session = null;
+      if (!ending) return;
+      const m = /firstMs=(-?\d+)/i.exec(trimmed);
+      const n = m ? Number(m[1]) : undefined;
+      ending.settle({
+        detail: trimmed,
+        firstMs:
+          firstMs ??
+          (Number.isFinite(n) && (n as number) >= 0 ? (n as number) : undefined),
+      });
+      return;
+    }
+    if (/^err\b/i.test(trimmed)) {
+      const ending = session.ending;
+      host.session = null;
+      if (ending) ending.fail(new Error(trimmed));
+      return;
+    }
+  };
+
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    host.buffer += String(chunk);
+    let idx: number;
+    while ((idx = host.buffer.indexOf("\n")) >= 0) {
+      const line = host.buffer.slice(0, idx);
+      host.buffer = host.buffer.slice(idx + 1);
+      onLine(line.replace(/\r$/, ""));
+    }
+  });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    console.warn(`[voice-cursor] pcm-host stderr: ${String(chunk).trim()}`);
+  });
+  child.on("exit", (code) => {
+    console.warn(`[voice-cursor] pcm-host exited code=${code}`);
+    const err = new Error(`pcm-host exited (${code})`);
+    if (host.session?.ending) host.session.ending.fail(err);
+    host.session = null;
+    if (pcmHost === host) pcmHost = null;
+    readyReject(err);
+  });
+
+  const timeout = setTimeout(() => {
+    readyReject(new Error("pcm-host ready timeout"));
+  }, 12_000);
+  host.ready = host.ready.finally(() => clearTimeout(timeout));
+
+  pcmHost = host;
+  await host.ready;
+  console.log("[voice-cursor] pcm-host ready");
+  return host;
+}
+
+/**
+ * Gapless linear16 playback via warm waveOut host (Windows).
+ * Call write() with PCM frames, then end() when the stream is finished.
+ */
+async function startPcmPlaySession(options: {
+  sampleRate: number;
+  channels?: number;
+  bitsPerSample?: number;
+}): Promise<PcmPlaySession> {
+  if (process.platform !== "win32") {
+    throw new Error("PCM stream playback is Windows-only for now");
+  }
+  const host = await ensurePcmHost();
+  if (host.session) {
+    throw new Error("PCM play session already active");
+  }
+
+  const channels = options.channels ?? 1;
+  const bits = options.bitsPerSample ?? 16;
+  host.session = { ending: null };
+  host.child.stdin?.write(
+    `start ${options.sampleRate} ${channels} ${bits}\n`,
+  );
+
+  let ended = false;
+  return {
+    write(pcm: Buffer) {
+      if (ended || !pcm.length) return;
+      const b64 = pcm.toString("base64");
+      const max = 24_000;
+      for (let i = 0; i < b64.length; i += max) {
+        host.child.stdin?.write(`pcm ${b64.slice(i, i + max)}\n`);
+      }
+    },
+    end() {
+      if (ended) {
+        return Promise.resolve({
+          detail: "ok already-ended",
+          firstMs: host.session?.firstMs,
+        });
+      }
+      ended = true;
+      return new Promise<{ detail: string; firstMs?: number }>((resolve, reject) => {
+        if (!host.session) {
+          reject(new Error("PCM session missing"));
+          return;
+        }
+        host.session.ending = { settle: resolve, fail: reject };
+        try {
+          host.child.stdin?.write("end\n");
+        } catch (error) {
+          host.session = null;
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    },
+  };
+}
+
 type EdgeClientCache = { voice: string; tts: MsEdgeTTS };
 let edgeClientCache: EdgeClientCache | null = null;
 
@@ -950,6 +1129,16 @@ export async function warmTts(): Promise<void> {
   try {
     if (process.platform === "win32") {
       await ensurePlayHost();
+      if (cfg.stream) {
+        try {
+          await ensurePcmHost();
+        } catch (error) {
+          console.warn(
+            "[voice-cursor] pcm-host warm failed:",
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }
     }
     if (cfg.resolved === "deepgram" && deepgramKey()) {
       const model = resolveDeepgramTtsModel();
@@ -1065,7 +1254,7 @@ async function synthDeepgramChunk(text: string, outPath: string): Promise<string
   return outPath;
 }
 
-/** Split for Flux turns: one sentence per Speak/Flush (smooth MCI playback). */
+/** Fallback: sentence WAVs via MCI when waveOut PCM host isn't available. */
 function sentencesForFluxTts(text: string, maxChars = 500): string[] {
   const cleaned = text.replace(/\s+/g, " ").trim();
   if (!cleaned) return [];
@@ -1081,7 +1270,6 @@ function sentencesForFluxTts(text: string, maxChars = 500): string[] {
       out.push(sentence);
       continue;
     }
-    // Hard-wrap a run-on sentence so the first clip isn't huge.
     let remaining = sentence;
     while (remaining.length > maxChars) {
       let cut = remaining.lastIndexOf(" ", maxChars);
@@ -1095,10 +1283,86 @@ function sentencesForFluxTts(text: string, maxChars = 500): string[] {
 }
 
 /**
- * Flux WebSocket: one sentence per turn, play each sentence as a single WAV.
- * Avoids glitchy ~120ms MCI cut-points; still pipelines sentence N+1 while playing N.
+ * Flux WebSocket + gapless waveOut: stream PCM as it arrives (low TTFA, no MCI chops).
+ * Falls back to sentence WAV files if the PCM host isn't usable.
  */
 async function speakWithDeepgramFluxStream(text: string): Promise<{
+  engine: string;
+  voice: string;
+  firstAudioMs?: number;
+  totalMs: number;
+}> {
+  if (process.platform === "win32") {
+    try {
+      return await speakWithDeepgramFluxPcmStream(text);
+    } catch (error) {
+      console.warn(
+        "[voice-cursor] PCM stream playback failed, falling back to sentence WAVs:",
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+  return speakWithDeepgramFluxSentenceWavs(text);
+}
+
+/** Preferred path: one Flux turn for the full reply, play PCM continuously. */
+async function speakWithDeepgramFluxPcmStream(text: string): Promise<{
+  engine: string;
+  voice: string;
+  firstAudioMs?: number;
+  totalMs: number;
+}> {
+  const voice = resolveDeepgramTtsModel();
+  const speed = resolveDeepgramTtsSpeed();
+  const totalStarted = Date.now();
+
+  console.log(
+    `[voice-cursor] deepgram-tts-ws pcm-stream chars=${text.length} voice=${voice} speed=${speed} sampleRate=${FLUX_TTS_SAMPLE_RATE}`,
+  );
+
+  const session = await ensureFluxSession();
+  const player = await startPcmPlaySession({ sampleRate: FLUX_TTS_SAMPLE_RATE });
+  let audioBytes = 0;
+
+  try {
+    const turn = await session.speakTurn(text, (pcm) => {
+      audioBytes += pcm.length;
+      player.write(pcm);
+    });
+    const play = await player.end();
+
+    if (!audioBytes && !turn.audioBytes) {
+      throw new Error("Flux TTS produced no audio");
+    }
+
+    // play.firstMs is measured from waveOut session start (≈ this function's start).
+    const firstAudioMs =
+      play.firstMs !== undefined && play.firstMs >= 0
+        ? play.firstMs
+        : turn.firstByteMs;
+
+    const totalMs = Date.now() - totalStarted;
+    console.log(
+      `[voice-cursor] deepgram-tts-ws pcm-stream totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} firstByteMs=${turn.firstByteMs ?? "n/a"} play=${play.detail} audioBytes=${turn.audioBytes}`,
+    );
+    return {
+      engine: "deepgram-tts-ws",
+      voice,
+      firstAudioMs,
+      totalMs,
+    };
+  } catch (error) {
+    try {
+      await player.end();
+    } catch {
+      // ignore
+    }
+    throw error;
+  }
+}
+
+/** Fallback path: one sentence per Flux turn, play each as a single WAV via MCI. */
+async function speakWithDeepgramFluxSentenceWavs(text: string): Promise<{
   engine: string;
   voice: string;
   firstAudioMs?: number;
@@ -1111,7 +1375,7 @@ async function speakWithDeepgramFluxStream(text: string): Promise<{
   const sentences = sentencesForFluxTts(text);
 
   console.log(
-    `[voice-cursor] deepgram-tts-ws speak sentences=${sentences.length} chars=${text.length} voice=${voice} speed=${speed} sampleRate=${FLUX_TTS_SAMPLE_RATE}`,
+    `[voice-cursor] deepgram-tts-ws sentence-wavs sentences=${sentences.length} chars=${text.length} voice=${voice} speed=${speed}`,
   );
 
   const session = await ensureFluxSession();
@@ -1120,7 +1384,7 @@ async function speakWithDeepgramFluxStream(text: string): Promise<{
   const synthSentence = async (
     sentence: string,
     index: number,
-  ): Promise<{ wavPath: string; pcmBytes: number; firstByteMs?: number }> => {
+  ): Promise<{ wavPath: string; pcmBytes: number }> => {
     const synthStarted = Date.now();
     const parts: Buffer[] = [];
     const turn = await session.speakTurn(sentence, (pcm) => {
@@ -1135,15 +1399,10 @@ async function speakWithDeepgramFluxStream(text: string): Promise<{
     console.log(
       `[voice-cursor] deepgram-tts-ws sentence=${index} chars=${sentence.length} pcmBytes=${pcmBuf.length} firstByteMs=${turn.firstByteMs ?? "n/a"} synthMs=${Date.now() - synthStarted}`,
     );
-    return {
-      wavPath,
-      pcmBytes: pcmBuf.length,
-      firstByteMs: turn.firstByteMs,
-    };
+    return { wavPath, pcmBytes: pcmBuf.length };
   };
 
   try {
-    // Pipeline: synthesize N+1 while playing N (first sentence starts ASAP).
     let nextFile =
       sentences.length > 0 ? synthSentence(sentences[0], 0) : null;
     let played = 0;
@@ -1170,20 +1429,13 @@ async function speakWithDeepgramFluxStream(text: string): Promise<{
       }
     }
 
-    if (played === 0) {
-      throw new Error("Flux TTS produced no audio");
-    }
+    if (played === 0) throw new Error("Flux TTS produced no audio");
 
     const totalMs = Date.now() - totalStarted;
     console.log(
-      `[voice-cursor] deepgram-tts-ws totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} sentences=${played}`,
+      `[voice-cursor] deepgram-tts-ws sentence-wavs totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} sentences=${played}`,
     );
-    return {
-      engine: "deepgram-tts-ws",
-      voice,
-      firstAudioMs,
-      totalMs,
-    };
+    return { engine: "deepgram-tts-ws", voice, firstAudioMs, totalMs };
   } finally {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
