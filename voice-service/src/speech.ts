@@ -153,11 +153,40 @@ type MicSession = {
   id: string;
   wavPath: string;
   stopPath: string;
+  logPath: string;
+  errPath: string;
   child: ReturnType<typeof import("node:child_process").spawn>;
   startedAt: string;
+  stdout: string;
+  stderr: string;
 };
 
 let micSession: MicSession | null = null;
+
+function readTextIfExists(filePath: string): string {
+  try {
+    if (!fs.existsSync(filePath)) return "";
+    return fs.readFileSync(filePath, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function micFailureDetail(session: MicSession, fallback: string): string {
+  const errFile = readTextIfExists(session.errPath);
+  const logTail = readTextIfExists(session.logPath).split(/\r?\n/).slice(-8).join(" | ");
+  const stderr = session.stderr.trim().slice(-500);
+  const stdout = session.stdout.trim().slice(-300);
+  const bits = [
+    fallback,
+    errFile && `recorder: ${errFile}`,
+    stderr && `stderr: ${stderr}`,
+    stdout && `stdout: ${stdout}`,
+    logTail && `log: ${logTail}`,
+    `exit=${session.child.exitCode}`,
+  ].filter(Boolean);
+  return bits.join(" — ");
+}
 
 export function getMicSessionStatus(): {
   listening: boolean;
@@ -189,6 +218,8 @@ export async function startMicSession(options?: {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-mic-"));
   const wavPath = path.join(dir, "clip.wav");
   const stopPath = path.join(dir, "stop.flag");
+  const logPath = `${wavPath}.log`;
+  const errPath = `${wavPath}.err`;
   const maxSeconds = options?.maxSeconds ?? 120;
   const startedAt = new Date().toISOString();
 
@@ -214,22 +245,45 @@ export async function startMicSession(options?: {
     },
   );
 
-  micSession = { id, wavPath, stopPath, child, startedAt };
+  const session: MicSession = {
+    id,
+    wavPath,
+    stopPath,
+    logPath,
+    errPath,
+    child,
+    startedAt,
+    stdout: "",
+    stderr: "",
+  };
+  micSession = session;
 
-  child.on("exit", () => {
-    // Session cleared on stop; if process dies early, mark inactive.
-    if (micSession?.id === id) {
-      // keep paths so stop can still try to read wav if process exited after save
-    }
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    session.stdout += String(chunk);
+  });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    session.stderr += String(chunk);
+    console.warn(`[voice-cursor] mic recorder stderr: ${String(chunk).trim()}`);
+  });
+  child.on("exit", (code) => {
+    console.log(
+      `[voice-cursor] mic recorder process exit code=${code} id=${id} stderr=${session.stderr.trim().slice(0, 200)}`,
+    );
   });
 
   // Give MCI a moment to start recording.
-  await new Promise((r) => setTimeout(r, 400));
+  await new Promise((r) => setTimeout(r, 700));
   if (child.exitCode !== null) {
     micSession = null;
-    throw new Error("Mic recorder exited immediately — check microphone permissions");
+    throw new Error(
+      micFailureDetail(
+        session,
+        "Mic recorder exited immediately — check Windows mic privacy settings (Settings → Privacy → Microphone)",
+      ),
+    );
   }
 
+  console.log(`[voice-cursor] mic listening id=${id} wav=${wavPath}`);
   return { id, startedAt };
 }
 
@@ -338,7 +392,10 @@ export async function stopMicSessionAndTranscribe(): Promise<{
 
   const session = micSession;
   const started = Date.parse(session.startedAt);
-  console.log(`[voice-cursor] mic stop requested id=${session.id}`);
+  const alreadyExited = session.child.exitCode !== null;
+  console.log(
+    `[voice-cursor] mic stop requested id=${session.id} alreadyExited=${alreadyExited} exit=${session.child.exitCode}`,
+  );
   try {
     fs.writeFileSync(session.stopPath, "stop\n", "utf8");
   } catch (error) {
@@ -349,7 +406,7 @@ export async function stopMicSessionAndTranscribe(): Promise<{
     const timeout = setTimeout(() => {
       console.warn("[voice-cursor] mic recorder exit wait timed out; killing");
       resolve();
-    }, 8_000);
+    }, 12_000);
     if (session.child.exitCode !== null) {
       clearTimeout(timeout);
       resolve();
@@ -362,19 +419,36 @@ export async function stopMicSessionAndTranscribe(): Promise<{
     });
   });
 
-  try {
-    session.child.kill();
-  } catch {
-    // ignore
+  if (session.child.exitCode === null) {
+    try {
+      session.child.kill();
+    } catch {
+      // ignore
+    }
+    await new Promise((r) => setTimeout(r, 400));
   }
 
   micSession = null;
 
-  // Brief settle for file flush.
-  await new Promise((r) => setTimeout(r, 200));
+  // Poll briefly for WAV flush (MCI save can lag a beat after process exit).
+  for (let i = 0; i < 15; i++) {
+    if (fs.existsSync(session.wavPath) && fs.statSync(session.wavPath).size > 0) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
 
   if (!fs.existsSync(session.wavPath)) {
-    throw new Error("Recording stopped but WAV was not created");
+    const detail = micFailureDetail(
+      session,
+      alreadyExited
+        ? "Recorder died before Stop (no WAV)"
+        : "Recording stopped but WAV was not created",
+    );
+    try {
+      fs.rmSync(path.dirname(session.wavPath), { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+    throw new Error(detail);
   }
   const bytes = fs.statSync(session.wavPath).size;
   console.log(`[voice-cursor] mic wav ready bytes=${bytes}`);
@@ -384,7 +458,9 @@ export async function stopMicSessionAndTranscribe(): Promise<{
     } catch {
       // ignore
     }
-    throw new Error(`Recording too short/empty (${bytes} bytes)`);
+    throw new Error(
+      micFailureDetail(session, `Recording too short/empty (${bytes} bytes)`),
+    );
   }
 
   try {
