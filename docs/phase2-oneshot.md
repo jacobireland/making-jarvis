@@ -6,7 +6,7 @@
 3. **Voice Cursor: Stop Listening & Send** (or click status bar again)
 4. Confirm transcript (optional setting) → Agent → spoken reply
 
-Fixed 7s listen is no longer required for normal use.
+The old fixed-window `/stt/listen` debug path is gone. Normal use is push-to-talk: `/stt/start` then `/stt/stop`.
 
 ## Commands
 - `Voice Cursor: Start Listening`
@@ -21,7 +21,7 @@ Fixed 7s listen is no longer required for normal use.
 - `voiceCursor.quietUi` — skip routine success toasts during PTT (default true)
 
 ## STT / TTS
-- STT: Deepgram Nova (Whisper / Windows fallbacks)
-- TTS: Deepgram Flux WebSocket streaming (Edge / Windows fallbacks)
+- STT: **Deepgram Nova** (optional OpenAI Whisper, then Windows, as fallbacks)
+- TTS: **Deepgram Flux** WebSocket streaming (Edge / Windows fallbacks)
 
-See also: [phase3-reliability.md](phase3-reliability.md)
+See also: [phase3-reliability.md](phase3-reliability.md) · [deepgram-setup.md](deepgram-setup.md) · [openai-whisper-setup.md](openai-whisper-setup.md) (fallback)

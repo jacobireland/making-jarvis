@@ -7,9 +7,9 @@ Voice interface to the **existing Cursor Agent**. Cursor remains responsible for
 | Piece | Role |
 |---|---|
 | `extension/` | Push-to-talk, auto-start service, inject into Agent (same-thread by default) |
-| `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Deepgram STT/TTS (Flux WebSocket streaming) |
+| `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Deepgram STT/TTS (Flux WebSocket streaming; Whisper/Windows STT fallbacks) |
 | `.cursor/hooks/` | `afterAgentThought` + `afterAgentResponse` → service (spoken thoughts then final reply) |
-| `scripts/` | Windows Enter / PCM play / STT helpers |
+| `scripts/` | Windows Enter / PCM play / PTT WAV STT helpers |
 | `shared/` | Event types + `toSpokenText()` |
 
 ## Quick start (Windows)
@@ -29,7 +29,7 @@ In Cursor (open the repo folder that contains `.cursor/hooks.json`):
 
 Optional manual service: `npm run service` (leave running). Disable auto-start via `voiceCursor.autoStartService`.
 
-Details: [docs/phase3-reliability.md](docs/phase3-reliability.md) · [docs/phase2-oneshot.md](docs/phase2-oneshot.md) · Deepgram: [docs/deepgram-setup.md](docs/deepgram-setup.md)
+Details: [docs/phase3-reliability.md](docs/phase3-reliability.md) · [docs/phase2-oneshot.md](docs/phase2-oneshot.md) · Deepgram (primary STT/TTS): [docs/deepgram-setup.md](docs/deepgram-setup.md) · Whisper (optional STT fallback): [docs/openai-whisper-setup.md](docs/openai-whisper-setup.md)
 
 ## Design constraints
 

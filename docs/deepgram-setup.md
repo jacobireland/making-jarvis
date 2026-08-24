@@ -36,7 +36,7 @@ Flux streaming connects to:
 REST fallback (Aura, or if WS fails):
 `https://api.deepgram.com/v2/speak?model=flux-marcelo-en&speed=1.1`
 
-With `auto`, Deepgram is preferred when the key is present (Whisper/Edge remain fallbacks).
+With `auto`, Deepgram is preferred when the key is present. OpenAI Whisper and Windows STT remain **fallbacks** (not the primary path). Edge/SAPI remain TTS fallbacks. See [openai-whisper-setup.md](openai-whisper-setup.md) if you need the Whisper fallback.
 
 ## 3. Restart service
 ```powershell

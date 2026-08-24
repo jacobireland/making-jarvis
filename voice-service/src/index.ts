@@ -11,7 +11,6 @@ import {
   type VoiceCursorState,
 } from "@voice-cursor/shared";
 import {
-  listenOnce,
   speakText,
   describeSttConfig,
   describeTtsConfig,
@@ -388,34 +387,6 @@ const server = http.createServer(async (req, res) => {
       }
       setState(next, typeof body.detail === "string" ? body.detail : undefined);
       json(res, 200, { ok: true, state });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/stt/listen") {
-      if (speechBusy) {
-        json(res, 409, { ok: false, error: "speech pipeline busy" });
-        return;
-      }
-      const body = (await readJson(req)) as Record<string, unknown>;
-      const seconds = typeof body.seconds === "number" ? body.seconds : 7;
-      speechBusy = true;
-      setState("listening", `recording ~${seconds}s`);
-      try {
-        const result = await listenOnce({ seconds });
-        setState("transcribing", result.engine);
-        pushEvent({
-          type: "utterance",
-          text: result.text,
-          receivedAt: new Date().toISOString(),
-        });
-        setState(result.text ? "idle" : "error", result.text ? "stt ok" : "empty transcript");
-        json(res, 200, { ok: true, ...result });
-      } catch (error) {
-        setState("error", error instanceof Error ? error.message : String(error));
-        throw error;
-      } finally {
-        speechBusy = false;
-      }
       return;
     }
 

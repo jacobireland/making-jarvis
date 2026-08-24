@@ -316,47 +316,6 @@ function chunkForTts(text: string, maxChars = 900): string[] {
   return chunks;
 }
 
-export async function listenOnce(options: {
-  seconds?: number;
-}): Promise<{ text: string; engine: string }> {
-  const seconds = options.seconds ?? 7;
-
-  if (process.platform !== "win32") {
-    throw new Error(
-      `STT is Windows System.Speech only for now (platform=${process.platform})`,
-    );
-  }
-
-  const script = resolveRepoScript("stt-windows.ps1");
-  if (!script) {
-    throw new Error("scripts/stt-windows.ps1 not found");
-  }
-
-  const { stdout, stderr } = await execFileAsync(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      script,
-      "-Seconds",
-      String(seconds),
-    ],
-    {
-      windowsHide: true,
-      timeout: (seconds + 15) * 1000,
-      maxBuffer: 1024 * 1024,
-    },
-  );
-
-  const text = String(stdout ?? "").trim();
-  if (!text && stderr?.trim()) {
-    throw new Error(stderr.trim());
-  }
-  return { text, engine: "windows-system-speech" };
-}
-
 type MicSession = {
   id: string;
   wavPath: string;
