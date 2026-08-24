@@ -13,13 +13,13 @@ WAV click-to-send is still the fallback when Flux listen isn't available.
 - `Voice Cursor: Start Listening`
 - `Voice Cursor: Stop Listening & Send`
 - `Voice Cursor: Cancel Listening`
-- `Voice Cursor: One-Shot Talk` — start + prompt you to stop (helper)
+- `Voice Cursor: One-Shot Talk` — same as Start Listening
 
 ## Settings
 - `voiceCursor.confirmTranscript` — confirm before send (default **false**)
 - `voiceCursor.oneShotNewChat` — new Agent chat each turn (default **false**; first turn opens one chat, then same thread)
 - `voiceCursor.autoStartService` — spawn voice-service if down (default true)
-- `voiceCursor.quietUi` — skip routine success toasts during PTT (default true)
+- `voiceCursor.quietUi` — skip routine success toasts during PTT (default true). Listen state is the status bar only (**LISTENING** / **IDLE**).
 - `voiceCursor.autoEndUtterance` — pause-to-send via Deepgram Flux (default **true**; click Stop still works)
 - `voiceCursor.autoRearmListening` — after the spoken reply, start listening again (default **true**)
 

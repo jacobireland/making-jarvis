@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import { injectPrompt } from "./inject";
 import { waitForAgentResponseFast, waitForTtsDoneFast } from "./agentWait";
-import { showStickyListeningUi } from "./listenUi";
 import { createTimedLogger } from "./log";
 import type { SubmitChord } from "./inject";
 
@@ -33,11 +32,12 @@ export async function startPushToTalk(options: {
         id?: string;
         autoEnd?: boolean;
         mode?: string;
+        resumed?: boolean;
       };
       if (res.status === 409) {
         lastError = body.error ?? "speech pipeline busy";
         options.log(`[ptt] start busy attempt=${attempt + 1} ${lastError}`);
-        await sleep(80);
+        await sleep(20);
         continue;
       }
       if (!res.ok || !body.ok) {
@@ -45,7 +45,9 @@ export async function startPushToTalk(options: {
       }
       const resolvedAutoEnd = body.autoEnd === true;
       options.log(
-        `[ptt] listening id=${body.id} mode=${body.mode ?? "?"} autoEnd=${resolvedAutoEnd}`,
+        `[ptt] listening id=${body.id} mode=${body.mode ?? "?"} autoEnd=${resolvedAutoEnd}${
+          body.resumed ? " resumed=true" : ""
+        }`,
       );
       return { ok: true, autoEnd: resolvedAutoEnd, mode: body.mode };
     }
@@ -250,63 +252,4 @@ export async function stopPushToTalkAndSend(options: {
   if (!quietUi) {
     void vscode.window.showInformationMessage("Voice Cursor: done.");
   }
-}
-
-/** One-shot = start listen, sticky UI until status-bar Stop & Send (or Cancel). */
-export async function runOneShotTalk(options: {
-  serviceBase: string;
-  extensionPath: string;
-  newChat: boolean;
-  submitCandidates: string[];
-  submitChord?: SubmitChord;
-  confirmTranscript?: boolean;
-  quietUi?: boolean;
-  autoEnd?: boolean;
-  log: (message: string) => void;
-  setStatus: (state: string, detail?: string) => void;
-  /** Called after mic starts so the extension can point the status bar at Stop. */
-  onListening?: (info: { autoEnd: boolean; mode?: string }) => void;
-  onInjected?: (openedWith?: string) => void;
-}): Promise<void> {
-  const started = await startPushToTalk({
-    serviceBase: options.serviceBase,
-    log: options.log,
-    setStatus: options.setStatus,
-    autoEnd: options.autoEnd,
-  });
-  if (!started.ok) return;
-
-  options.onListening?.({ autoEnd: started.autoEnd, mode: started.mode });
-
-  const action = await showStickyListeningUi({
-    message: started.autoEnd
-      ? "Pause when done to send. Click the status-bar item to turn listening off, or send now."
-      : "Click the status-bar item to turn listening off, or send now.",
-    onCancel: async () => {
-      await fetch(`${options.serviceBase.replace(/\/$/, "")}/stt/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      }).catch(() => undefined);
-    },
-  });
-
-  if (action !== "send") {
-    options.setStatus("idle", "cancelled");
-    options.log("[ptt] listening cancelled from sticky UI");
-    return;
-  }
-
-  await stopPushToTalkAndSend({
-    serviceBase: options.serviceBase,
-    extensionPath: options.extensionPath,
-    newChat: options.newChat,
-    submitCandidates: options.submitCandidates,
-    submitChord: options.submitChord,
-    confirmTranscript: options.confirmTranscript ?? false,
-    quietUi: options.quietUi ?? true,
-    log: options.log,
-    setStatus: options.setStatus,
-    onInjected: options.onInjected,
-  });
 }

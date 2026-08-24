@@ -403,11 +403,18 @@ type StreamMicSession = {
     confidence?: number;
   }) => void;
   onPartial?: (text: string) => void;
+  /** When false, PCM is captured but not sent to Flux (parked during TTS). */
+  captureEnabled: boolean;
+  keepAliveTimer?: ReturnType<typeof setInterval>;
 };
 
 type MicSession = WavMicSession | StreamMicSession;
 
 let micSession: MicSession | null = null;
+/** Flux capture left running but gated off so the next listen can resume instantly. */
+let parkedFlux: StreamMicSession | null = null;
+/** KeepAlive / reconnect while the waveIn host stays up across TTS. */
+const PARK_KEEPALIVE_MS = 3000;
 
 function readTextIfExists(filePath: string): string {
   try {
@@ -436,21 +443,36 @@ function micFailureDetail(session: WavMicSession, fallback: string): string {
 
 export function getMicSessionStatus(): {
   listening: boolean;
+  parked?: boolean;
   id?: string;
   startedAt?: string;
   mode?: "wav" | "flux-stream";
   autoEnd?: boolean;
   committed?: boolean;
 } {
-  if (!micSession) return { listening: false };
-  return {
-    listening: true,
-    id: micSession.id,
-    startedAt: micSession.startedAt,
-    mode: micSession.mode,
-    autoEnd: micSession.autoEnd,
-    committed: micSession.mode === "flux-stream" ? Boolean(micSession.committed) : false,
-  };
+  if (micSession) {
+    return {
+      listening: true,
+      parked: false,
+      id: micSession.id,
+      startedAt: micSession.startedAt,
+      mode: micSession.mode,
+      autoEnd: micSession.autoEnd,
+      committed: micSession.mode === "flux-stream" ? Boolean(micSession.committed) : false,
+    };
+  }
+  if (parkedFlux) {
+    return {
+      listening: false,
+      parked: true,
+      id: parkedFlux.id,
+      startedAt: parkedFlux.startedAt,
+      mode: parkedFlux.mode,
+      autoEnd: parkedFlux.autoEnd,
+      committed: Boolean(parkedFlux.committed),
+    };
+  }
+  return { listening: false };
 }
 
 export type StartMicResult = {
@@ -458,6 +480,7 @@ export type StartMicResult = {
   startedAt: string;
   autoEnd: boolean;
   mode: "wav" | "flux-stream";
+  resumed?: boolean;
 };
 
 export type StartMicOptions = {
@@ -471,6 +494,98 @@ export type StartMicOptions = {
   }) => void;
 };
 
+function stopParkKeepAlive(session: StreamMicSession): void {
+  if (session.keepAliveTimer) {
+    clearInterval(session.keepAliveTimer);
+    session.keepAliveTimer = undefined;
+  }
+}
+
+function startParkKeepAlive(session: StreamMicSession): void {
+  stopParkKeepAlive(session);
+  const tick = () => {
+    if (session.captureEnabled) return;
+    session.flux.sendKeepAlive();
+  };
+  tick();
+  session.keepAliveTimer = setInterval(tick, PARK_KEEPALIVE_MS);
+  session.keepAliveTimer.unref?.();
+}
+
+function commitFluxTurn(
+  session: StreamMicSession,
+  text: string,
+  confidence?: number,
+): void {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!session.captureEnabled) return;
+  if (session.committed || session.stopping) {
+    if (!session.committed && cleaned) {
+      session.committed = { text: cleaned, engine: "deepgram-flux", confidence };
+    }
+    return;
+  }
+  if (cleaned.length < 2) return;
+  session.committed = { text: cleaned, engine: "deepgram-flux", confidence };
+  session.captureEnabled = false;
+  startParkKeepAlive(session);
+  console.log(
+    `[voice-cursor] flux-stt EndOfTurn id=${session.id} chars=${cleaned.length} text=${cleaned.slice(0, 120)}`,
+  );
+  session.onUtteranceEnd?.(session.committed);
+}
+
+function bindFluxSession(session: StreamMicSession, apiKey: string): FluxSttSession {
+  return new FluxSttSession({
+    apiKey,
+    model: process.env.VOICE_CURSOR_FLUX_STT_MODEL || DEFAULT_FLUX_STT_MODEL,
+    eotThreshold: resolveEotThreshold(),
+    eotTimeoutMs: resolveEotTimeoutMs(),
+    handlers: {
+      onTurn: (msg) => {
+        const current = micSession;
+        if (!current || current !== session || !current.captureEnabled) return;
+        if (typeof msg.transcript === "string" && msg.transcript.trim()) {
+          current.lastText = msg.transcript.replace(/\s+/g, " ").trim();
+          if (msg.event === "Update" || msg.event === "StartOfTurn") {
+            current.onPartial?.(current.lastText);
+          }
+        }
+        if (shouldCommitFluxTurn(msg)) {
+          commitFluxTurn(session, msg.transcript ?? current.lastText, msg.end_of_turn_confidence);
+        }
+      },
+      onError: (error) => {
+        const current = micSession ?? parkedFlux;
+        if (!current || current !== session) return;
+        console.warn(`[voice-cursor] flux-stt error id=${current.id}: ${error.message}`);
+      },
+    },
+  });
+}
+
+async function teardownFluxCapture(session: StreamMicSession, reason: string): Promise<void> {
+  console.log(`[voice-cursor] flux-stt dispose reason=${reason} id=${session.id}`);
+  session.stopping = true;
+  session.captureEnabled = false;
+  stopParkKeepAlive(session);
+  if (session.maxTimer) {
+    clearTimeout(session.maxTimer);
+    session.maxTimer = undefined;
+  }
+  try {
+    session.child.stdin?.write("stop\n");
+  } catch {
+    // ignore
+  }
+  try {
+    session.child.kill();
+  } catch {
+    // ignore
+  }
+  void session.flux.close();
+}
+
 export async function startMicSession(options?: StartMicOptions): Promise<StartMicResult> {
   if (process.platform !== "win32") {
     throw new Error("Push-to-talk mic recording is Windows-only for now");
@@ -481,6 +596,8 @@ export async function startMicSession(options?: StartMicOptions): Promise<StartM
 
   const wantAutoEnd = options?.autoEnd !== false && isVadEnabled();
   if (wantAutoEnd && canStreamFluxStt()) {
+    const resumed = await resumeParkedFluxMic(options);
+    if (resumed) return resumed;
     try {
       return await startFluxMicSession(options);
     } catch (error) {
@@ -488,6 +605,7 @@ export async function startMicSession(options?: StartMicOptions): Promise<StartM
       console.warn(`[voice-cursor] Flux listen unavailable, falling back to WAV PTT: ${message}`);
     }
   }
+  await disposeParkedFlux("wav-fallback");
   return startWavMicSession(options);
 }
 
@@ -593,58 +711,12 @@ async function startFluxMicSession(options?: StartMicOptions): Promise<StartMicR
     stdout: "",
     stderr: "",
     autoEnd: true,
+    captureEnabled: true,
     onUtteranceEnd: options?.onUtteranceEnd,
     onPartial: options?.onPartial,
   };
 
-  const commitTurn = (text: string, confidence?: number) => {
-    const cleaned = text.replace(/\s+/g, " ").trim();
-    if (session.committed || session.stopping) {
-      if (!session.committed && cleaned) {
-        session.committed = { text: cleaned, engine: "deepgram-flux", confidence };
-      }
-      return;
-    }
-    if (cleaned.length < 2) return;
-    session.committed = { text: cleaned, engine: "deepgram-flux", confidence };
-    console.log(
-      `[voice-cursor] flux-stt EndOfTurn id=${id} chars=${cleaned.length} text=${cleaned.slice(0, 120)}`,
-    );
-    try {
-      session.child.stdin?.write("stop\n");
-    } catch {
-      // ignore
-    }
-    void session.flux.close();
-    session.onUtteranceEnd?.(session.committed);
-  };
-
-  const flux = new FluxSttSession({
-    apiKey: key,
-    model: process.env.VOICE_CURSOR_FLUX_STT_MODEL || DEFAULT_FLUX_STT_MODEL,
-    eotThreshold: resolveEotThreshold(),
-    eotTimeoutMs: resolveEotTimeoutMs(),
-    handlers: {
-      onTurn: (msg) => {
-        const current = micSession;
-        if (!current || current.mode !== "flux-stream" || current.id !== id) return;
-        if (typeof msg.transcript === "string" && msg.transcript.trim()) {
-          current.lastText = msg.transcript.replace(/\s+/g, " ").trim();
-          if (msg.event === "Update" || msg.event === "StartOfTurn") {
-            current.onPartial?.(current.lastText);
-          }
-        }
-        if (shouldCommitFluxTurn(msg)) {
-          commitTurn(msg.transcript ?? current.lastText, msg.end_of_turn_confidence);
-        }
-      },
-      onError: (error) => {
-        const current = micSession;
-        if (!current || current.mode !== "flux-stream" || current.id !== id) return;
-        console.warn(`[voice-cursor] flux-stt error id=${id}: ${error.message}`);
-      },
-    },
-  });
+  const flux = bindFluxSession(session, key);
   session.flux = flux;
   try {
     await flux.connect();
@@ -704,7 +776,7 @@ async function startFluxMicSession(options?: StartMicOptions): Promise<StartMicR
     }
     if (trimmed.startsWith("pcm ")) {
       const b64 = trimmed.slice(4).trim();
-      if (!b64 || session.committed || session.stopping) return;
+      if (!b64 || session.committed || session.stopping || !session.captureEnabled) return;
       try {
         const pcm = Buffer.from(b64, "base64");
         session.flux.sendPcm(pcm);
@@ -740,8 +812,10 @@ async function startFluxMicSession(options?: StartMicOptions): Promise<StartMicR
   });
   child.on("exit", (code) => {
     console.log(
-      `[voice-cursor] pcm recorder exit code=${code} id=${id} stderr=${session.stderr.trim().slice(0, 200)}`,
+      `[voice-cursor] pcm recorder exit code=${code} id=${session.id} stderr=${session.stderr.trim().slice(0, 200)}`,
     );
+    if (micSession === session) micSession = null;
+    if (parkedFlux === session) parkedFlux = null;
     if (!readySettled) {
       failReady(
         new Error(
@@ -772,18 +846,13 @@ async function startFluxMicSession(options?: StartMicOptions): Promise<StartMicR
   micSession = session;
   session.maxTimer = setTimeout(() => {
     const current = micSession;
-    if (!current || current.mode !== "flux-stream" || current.id !== id) return;
+    if (!current || current !== session) return;
     if (current.committed || current.stopping) return;
-    console.warn(`[voice-cursor] flux-stt maxSeconds=${maxSeconds} id=${id}`);
+    console.warn(`[voice-cursor] flux-stt maxSeconds=${maxSeconds} id=${current.id}`);
     if (current.lastText.trim().length >= 2) {
-      commitTurn(current.lastText);
+      commitFluxTurn(current, current.lastText);
     } else {
-      try {
-        child.stdin?.write("stop\n");
-      } catch {
-        // ignore
-      }
-      void current.flux.close();
+      current.captureEnabled = false;
     }
   }, maxSeconds * 1000);
   session.maxTimer.unref?.();
@@ -978,6 +1047,7 @@ async function stopFluxMicSession(session: StreamMicSession): Promise<{
 }> {
   const started = Date.parse(session.startedAt);
   session.stopping = true;
+  session.captureEnabled = false;
   if (session.maxTimer) {
     clearTimeout(session.maxTimer);
     session.maxTimer = undefined;
@@ -985,16 +1055,9 @@ async function stopFluxMicSession(session: StreamMicSession): Promise<{
   console.log(
     `[voice-cursor] flux-stt stop id=${session.id} committed=${Boolean(session.committed)} lastChars=${session.lastText.length}`,
   );
-  try {
-    session.child.stdin?.write("stop\n");
-  } catch {
-    // ignore
-  }
 
   if (!session.committed) {
-    const waitMs = 1500;
-    const deadline = Date.now() + waitMs;
-    void session.flux.close();
+    const deadline = Date.now() + 1500;
     while (!session.committed && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
@@ -1004,32 +1067,125 @@ async function stopFluxMicSession(session: StreamMicSession): Promise<{
         engine: "deepgram-flux",
       };
     }
-  } else {
-    void session.flux.close();
   }
-
-  await waitChildExit(session.child, 4000);
-  if (session.child.exitCode === null) {
-    try {
-      session.child.kill();
-    } catch {
-      // ignore
-    }
-  }
-
-  if (micSession?.id === session.id) micSession = null;
 
   const text = session.committed?.text ?? "";
   const engine = session.committed?.engine ?? "deepgram-flux";
-  console.log(
-    `[voice-cursor] flux-stt stop done id=${session.id} chars=${text.length} engine=${engine}`,
-  );
+  const childAlive = session.child.exitCode === null;
+  const fluxAlive = session.flux.connected;
+
+  if (micSession === session) micSession = null;
+
+  if (childAlive) {
+    parkedFlux = session;
+    startParkKeepAlive(session);
+    console.log(
+      `[voice-cursor] flux-stt parked id=${session.id} chars=${text.length} flux=${fluxAlive ? "open" : "down"}`,
+    );
+  } else {
+    parkedFlux = null;
+    void session.flux.close();
+    console.log(
+      `[voice-cursor] flux-stt stop done id=${session.id} chars=${text.length} engine=${engine}`,
+    );
+  }
+
   return {
     text,
     engine,
     id: session.id,
     durationMs: Date.now() - started,
   };
+}
+
+async function resumeParkedFluxMic(options?: StartMicOptions): Promise<StartMicResult | null> {
+  const session = parkedFlux;
+  if (!session) return null;
+  if (session.child.exitCode !== null) {
+    await disposeParkedFlux("recorder-exited");
+    return null;
+  }
+
+  parkedFlux = null;
+  stopParkKeepAlive(session);
+  const id = `mic-${Date.now()}`;
+  session.id = id;
+  session.startedAt = new Date().toISOString();
+  session.lastText = "";
+  session.committed = null;
+  session.stopping = false;
+  session.captureEnabled = false;
+  session.onUtteranceEnd = options?.onUtteranceEnd;
+  session.onPartial = options?.onPartial;
+  session.autoEnd = true;
+
+  const fluxWasOpen = session.flux.connected;
+  try {
+    if (!fluxWasOpen) {
+      await session.flux.reconnect();
+    }
+  } catch (error) {
+    const key = deepgramKey();
+    if (!key) {
+      await teardownFluxCapture(session, "flux-reconnect-failed");
+      console.warn(
+        `[voice-cursor] parked flux reconnect failed: ${error instanceof Error ? error.message : error}`,
+      );
+      return null;
+    }
+    try {
+      void session.flux.close();
+      session.flux = bindFluxSession(session, key);
+      await session.flux.connect();
+    } catch (retryError) {
+      await teardownFluxCapture(session, "flux-reconnect-failed");
+      console.warn(
+        `[voice-cursor] parked flux reconnect failed: ${
+          retryError instanceof Error ? retryError.message : retryError
+        }`,
+      );
+      return null;
+    }
+  }
+
+  const maxSeconds = options?.maxSeconds ?? 120;
+  if (session.maxTimer) {
+    clearTimeout(session.maxTimer);
+  }
+  session.maxTimer = setTimeout(() => {
+    const current = micSession;
+    if (!current || current !== session) return;
+    if (current.committed || current.stopping || !current.captureEnabled) return;
+    console.warn(`[voice-cursor] flux-stt maxSeconds=${maxSeconds} id=${session.id}`);
+    if (current.lastText.trim().length >= 2) {
+      commitFluxTurn(current, current.lastText);
+    } else {
+      current.captureEnabled = false;
+    }
+  }, maxSeconds * 1000);
+  session.maxTimer.unref?.();
+
+  micSession = session;
+  session.captureEnabled = true;
+  console.log(
+    `[voice-cursor] mic listening id=${id} mode=flux-stream resumed=true flux=${
+      fluxWasOpen ? "kept" : "reconnected"
+    } eot=${resolveEotThreshold()} timeoutMs=${resolveEotTimeoutMs()}`,
+  );
+  return {
+    id,
+    startedAt: session.startedAt,
+    autoEnd: true,
+    mode: "flux-stream",
+    resumed: true,
+  };
+}
+
+async function disposeParkedFlux(reason: string): Promise<void> {
+  const session = parkedFlux;
+  parkedFlux = null;
+  if (!session) return;
+  await teardownFluxCapture(session, reason);
 }
 
 async function stopWavMicSession(session: WavMicSession): Promise<{
@@ -1113,42 +1269,31 @@ async function stopWavMicSession(session: WavMicSession): Promise<{
 }
 
 export async function cancelMicSession(): Promise<void> {
-  if (!micSession) return;
-  const session = micSession;
+  const active = micSession;
   micSession = null;
-  if (session.mode === "flux-stream") {
-    session.stopping = true;
-    if (session.maxTimer) {
-      clearTimeout(session.maxTimer);
-      session.maxTimer = undefined;
-    }
+  const parked = parkedFlux;
+  parkedFlux = null;
+  if (active?.mode === "flux-stream") {
+    await teardownFluxCapture(active, "cancel");
+  } else if (active) {
     try {
-      session.child.stdin?.write("stop\n");
+      fs.writeFileSync(active.stopPath, "stop\n", "utf8");
     } catch {
       // ignore
     }
     try {
-      session.child.kill();
+      active.child.kill();
     } catch {
       // ignore
     }
-    void session.flux.close();
-    return;
+    try {
+      fs.rmSync(path.dirname(active.wavPath), { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
   }
-  try {
-    fs.writeFileSync(session.stopPath, "stop\n", "utf8");
-  } catch {
-    // ignore
-  }
-  try {
-    session.child.kill();
-  } catch {
-    // ignore
-  }
-  try {
-    fs.rmSync(path.dirname(session.wavPath), { recursive: true, force: true });
-  } catch {
-    // ignore
+  if (parked && parked !== active) {
+    await teardownFluxCapture(parked, "cancel-parked");
   }
 }
 

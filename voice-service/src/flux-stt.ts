@@ -9,6 +9,8 @@ export const DEFAULT_FLUX_STT_MODEL = "flux-general-en";
 export const DEFAULT_EOT_THRESHOLD = 0.7;
 export const DEFAULT_EOT_TIMEOUT_MS = 7000;
 export const MIN_COMMIT_CHARS = 2;
+/** Sent while capture is parked so Deepgram does not idle-close the listen socket. */
+export const FLUX_KEEPALIVE = { type: "KeepAlive" } as const;
 
 export type FluxTurnEventName =
   | "Update"
@@ -114,6 +116,40 @@ export class FluxSttSession {
     } catch (error) {
       this.handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
     }
+  }
+
+  sendKeepAlive(): void {
+    const ws = this.socket;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.closed) return;
+    try {
+      ws.send(JSON.stringify(FLUX_KEEPALIVE));
+    } catch (error) {
+      this.handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  get connected(): boolean {
+    return Boolean(this.socket && this.socket.readyState === WebSocket.OPEN && !this.closed);
+  }
+
+  /**
+   * Re-open after an unexpected socket drop. Explicit {@link close} still
+   * permanently ends the session.
+   */
+  async reconnect(): Promise<void> {
+    if (this.closed) throw new Error("Flux STT session is closed");
+    this.stopPing();
+    const ws = this.socket;
+    this.socket = null;
+    this.connectPromise = null;
+    if (ws && ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+    }
+    await this.connect();
   }
 
   async close(): Promise<void> {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   DEFAULT_EOT_THRESHOLD,
+  FLUX_KEEPALIVE,
   fluxListenUrl,
   parseFluxListenMessage,
   shouldCommitFluxTurn,
@@ -40,6 +41,12 @@ describe("shouldCommitFluxTurn", () => {
     assert.equal(shouldCommitFluxTurn({ event: "StartOfTurn", transcript: text }), false);
     assert.equal(shouldCommitFluxTurn({ event: "EagerEndOfTurn", transcript: text }), false);
     assert.equal(shouldCommitFluxTurn({ event: "TurnResumed", transcript: text }), false);
+  });
+});
+
+describe("FLUX_KEEPALIVE", () => {
+  it("is the Deepgram listen keepalive payload", () => {
+    assert.equal(FLUX_KEEPALIVE.type, "KeepAlive");
   });
 });
 

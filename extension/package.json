@@ -90,7 +90,7 @@
         "voiceCursor.quietUi": {
           "type": "boolean",
           "default": true,
-          "description": "When true, skip routine success toasts during push-to-talk (errors and the sticky listening UI still show)"
+          "description": "When true, skip routine success toasts during push-to-talk (errors still show). Listen state is IDLE/LISTENING on the status bar only."
         },
         "voiceCursor.autoEndUtterance": {
           "type": "boolean",
