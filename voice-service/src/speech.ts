@@ -193,26 +193,46 @@ export async function startMicSession(options?: {
 async function transcribeWav(wavPath: string): Promise<string> {
   const script = resolveRepoScript("stt-wav-windows.ps1");
   if (!script) throw new Error("scripts/stt-wav-windows.ps1 not found");
-  const { stdout, stderr } = await execFileAsync(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      script,
-      "-WavFile",
-      wavPath,
-    ],
-    {
-      windowsHide: true,
-      timeout: 120_000,
-      maxBuffer: 1024 * 1024,
-    },
-  );
-  const text = String(stdout ?? "").trim();
-  if (!text && stderr?.trim()) throw new Error(stderr.trim());
-  return text;
+  const bytes = fs.existsSync(wavPath) ? fs.statSync(wavPath).size : 0;
+  console.log(`[voice-cursor] transcribeWav start bytes=${bytes} path=${wavPath}`);
+  const started = Date.now();
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script,
+        "-WavFile",
+        wavPath,
+        "-TimeoutSeconds",
+        "20",
+      ],
+      {
+        windowsHide: true,
+        timeout: 25_000,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+    const lines = String(stdout ?? "")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    // Last non-meta line is the transcript.
+    const textLine =
+      [...lines].reverse().find((l) => !l.startsWith("meta ")) ?? "";
+    if (!textLine && stderr?.trim()) throw new Error(stderr.trim());
+    console.log(
+      `[voice-cursor] transcribeWav done ms=${Date.now() - started} text=${textLine || "(empty)"}`,
+    );
+    return textLine;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[voice-cursor] transcribeWav failed ms=${Date.now() - started}: ${message}`);
+    throw new Error(`WAV transcription failed/timed out: ${message}`);
+  }
 }
 
 export async function stopMicSessionAndTranscribe(): Promise<{
@@ -227,17 +247,30 @@ export async function stopMicSessionAndTranscribe(): Promise<{
 
   const session = micSession;
   const started = Date.parse(session.startedAt);
-  fs.writeFileSync(session.stopPath, "stop\n", "utf8");
+  console.log(`[voice-cursor] mic stop requested id=${session.id}`);
+  try {
+    fs.writeFileSync(session.stopPath, "stop\n", "utf8");
+  } catch (error) {
+    console.warn("[voice-cursor] could not write stop file", error);
+  }
 
   await new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => resolve(), 15_000);
-    session.child.once("exit", () => {
+    const timeout = setTimeout(() => {
+      console.warn("[voice-cursor] mic recorder exit wait timed out; killing");
+      resolve();
+    }, 8_000);
+    if (session.child.exitCode !== null) {
+      clearTimeout(timeout);
+      resolve();
+      return;
+    }
+    session.child.once("exit", (code) => {
+      console.log(`[voice-cursor] mic recorder exited code=${code}`);
       clearTimeout(timeout);
       resolve();
     });
   });
 
-  // Ensure process is gone.
   try {
     session.child.kill();
   } catch {
@@ -246,10 +279,14 @@ export async function stopMicSessionAndTranscribe(): Promise<{
 
   micSession = null;
 
+  // Brief settle for file flush.
+  await new Promise((r) => setTimeout(r, 200));
+
   if (!fs.existsSync(session.wavPath)) {
     throw new Error("Recording stopped but WAV was not created");
   }
   const bytes = fs.statSync(session.wavPath).size;
+  console.log(`[voice-cursor] mic wav ready bytes=${bytes}`);
   if (bytes < 1000) {
     try {
       fs.rmSync(path.dirname(session.wavPath), { recursive: true, force: true });

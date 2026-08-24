@@ -268,9 +268,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/stt/stop") {
+      console.log("[voice-cursor] POST /stt/stop");
       setState("transcribing", "stopping mic");
       try {
         const result = await stopMicSessionAndTranscribe();
+        console.log(
+          `[voice-cursor] /stt/stop ok durationMs=${result.durationMs} chars=${result.text.length}`,
+        );
         pushEvent({
           type: "utterance",
           text: result.text,
@@ -279,7 +283,9 @@ const server = http.createServer(async (req, res) => {
         setState(result.text ? "idle" : "error", result.text ? "stt ok" : "empty transcript");
         json(res, 200, { ok: true, ...result });
       } catch (error) {
-        setState("error", error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn("[voice-cursor] /stt/stop failed", message);
+        setState("error", message);
         throw error;
       } finally {
         speechBusy = false;

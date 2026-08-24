@@ -1,44 +1,23 @@
-# Phase 2 — One-shot voice loop
-
-Status: implemented (Windows System.Speech STT + SAPI TTS)
+# Phase 2 — Push-to-talk voice loop
 
 ## Flow
-1. **Voice Cursor: One-Shot Talk** (or status bar click)
-2. Confirm → mic listens ~N seconds (`voiceCursor.listenSeconds`, default 7)
-3. Confirm transcript → inject + auto-submit into Cursor Agent
-4. Wait for hook capture
-5. Speak `spokenText` via **Edge TTS** (`en-PH-JamesNeural` by default), with Windows SAPI fallback
+1. **Voice Cursor: Start Listening** (or click status bar)
+2. Speak as long as you want
+3. **Voice Cursor: Stop Listening & Send** (or click status bar again)
+4. Confirm transcript (optional setting) → Agent → spoken reply
 
-## TTS
-Default voice: **English (Philippines) James** — `en-PH-JamesNeural`
+Fixed 7s listen is no longer required for normal use.
 
-Optional env vars when starting the service:
-```powershell
-$env:VOICE_CURSOR_TTS="edge"                 # or "windows"
-$env:VOICE_CURSOR_TTS_VOICE="en-PH-JamesNeural"
-npm run service
-```
-
-Needs internet for Edge TTS. If Edge fails, it falls back to Windows SAPI.
-
-## Requirements (Windows)
-- Default microphone working
-- Windows Speech Recognition / language pack available
-- Voice service running: `npm run service`
-- Same workspace root as `.cursor/hooks.json`
-
-## Test checklist
-- [ ] `npm run build` && restart `npm run service`
-- [ ] Reinstall extension from `extension/`
-- [ ] One-Shot Talk → speak a short ask → confirm transcript
-- [ ] Agent runs without manual Enter
-- [ ] Reply is spoken aloud
+## Commands
+- `Voice Cursor: Start Listening`
+- `Voice Cursor: Stop Listening & Send`
+- `Voice Cursor: Cancel Listening`
+- `Voice Cursor: One-Shot Talk` — start + prompt you to stop (helper)
 
 ## Settings
-- `voiceCursor.listenSeconds` — mic window length
+- `voiceCursor.confirmTranscript` — confirm before send (default true)
 - `voiceCursor.oneShotNewChat` — new Agent chat each turn (default true)
 
-## Not in Phase 2
-- Continuous listening / VAD
-- Barge-in while TTS is playing
-- Cloud STT (Whisper, etc.)
+## STT / TTS
+- STT: Windows System.Speech from recorded WAV
+- TTS: Edge `en-PH-JamesNeural` (SAPI fallback)
