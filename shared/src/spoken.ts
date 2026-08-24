@@ -103,6 +103,56 @@ export function toSpokenText(raw: string, options?: { maxChars?: number }): stri
   return ensureSentence(clipped);
 }
 
+/**
+ * Cursor's chat UI shows a short Thought preview line; `afterAgentThought`
+ * delivers the full expanded block. Prefer that preview: the last short
+ * paragraph / sentence (often an "I'll check…" line under the reasoning).
+ */
+export function toSpokenThoughtText(
+  raw: string,
+  options?: { maxChars?: number; full?: boolean },
+): string {
+  const maxChars = options?.maxChars ?? 320;
+  if (options?.full) {
+    return toSpokenText(raw, { maxChars: options.maxChars ?? 2500 });
+  }
+
+  const text = raw.replace(/\r\n/g, "\n").trim();
+  if (!text) return "";
+
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map((block) =>
+      block
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) return "";
+
+  // Preview line is usually the final short paragraph under the long reasoning.
+  let preview = paragraphs[paragraphs.length - 1] ?? "";
+
+  // Single long blob (or last paragraph still huge): take its last sentence,
+  // which matches the collapsed Thought one-liner in Cursor's UI.
+  if (preview.length > maxChars || countSentences(preview) > 2) {
+    preview = lastSentence(preview) || preview;
+  }
+
+  // If we still have a wall of text, fall back to the first sentence.
+  if (preview.length > maxChars) {
+    preview = firstSentence(paragraphs[0] ?? preview) || preview;
+  }
+
+  const spoken = toSpokenText(preview, { maxChars });
+  return spoken === "Done." ? "" : spoken;
+}
+
 /** Append one speakable unit, ensuring it ends with sentence punctuation for TTS pauses. */
 function pushSpokenUnit(out: string[], unit: string): void {
   let s = unit.replace(/\s+/g, " ").trim();
@@ -116,4 +166,24 @@ function pushSpokenUnit(out: string[], unit: string): void {
 function ensureSentence(text: string): string {
   if (/[.!?…]["']?$/.test(text)) return text;
   return `${text}.`;
+}
+
+function countSentences(text: string): number {
+  const parts = text.match(/[^.!?…]+[.!?…]+/g);
+  return parts?.length ?? (text.trim() ? 1 : 0);
+}
+
+function firstSentence(text: string): string {
+  const match = text.match(/^[\s\S]+?[.!?…](?:["')\]]+)?(?=\s|$)/);
+  return (match?.[0] ?? text).trim();
+}
+
+function lastSentence(text: string): string {
+  const matches = text.match(/[^.!?…]+[.!?…]+(?:["')\]]+)?/g);
+  if (matches && matches.length > 0) {
+    return matches[matches.length - 1].trim();
+  }
+  // No terminal punctuation: treat the whole (or last clause after ;/) as one unit.
+  const soft = text.split(/(?<=[;:])\s+/);
+  return (soft[soft.length - 1] ?? text).trim();
 }

@@ -3,6 +3,7 @@ import { URL } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   toSpokenText,
+  toSpokenThoughtText,
   type AgentResponseEvent,
   type AgentThoughtEvent,
   type HealthResponse,
@@ -34,7 +35,7 @@ process.on("unhandledRejection", (reason) => {
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.3.5";
+const VERSION = "0.3.6";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
@@ -193,6 +194,11 @@ function asAgentResponse(body: Record<string, unknown>): AgentResponseEvent {
   };
 }
 
+function isSpeakFullThoughtsEnabled(): boolean {
+  const raw = (process.env.VOICE_CURSOR_SPEAK_FULL_THOUGHTS ?? "false").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
 function asAgentThought(body: Record<string, unknown>): AgentThoughtEvent {
   const text = typeof body.text === "string" ? body.text : "";
   const durationMs =
@@ -201,7 +207,11 @@ function asAgentThought(body: Record<string, unknown>): AgentThoughtEvent {
       : typeof body.durationMs === "number"
         ? body.durationMs
         : undefined;
-  const spokenText = toSpokenText(text, { maxChars: maxSpokenChars() });
+  // Default: chat preview one-liner only (not the expanded Thought body).
+  const spokenText = toSpokenThoughtText(text, {
+    maxChars: isSpeakFullThoughtsEnabled() ? maxSpokenChars() : 320,
+    full: isSpeakFullThoughtsEnabled(),
+  });
   return {
     type: "agent_thought",
     text,

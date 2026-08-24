@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { toSpokenText } from "./spoken";
+import { toSpokenText, toSpokenThoughtText } from "./spoken";
 
 test("speaks short answers mostly as-is", () => {
   assert.equal(toSpokenText("PONG"), "PONG.");
@@ -34,7 +34,6 @@ Colors and shapes — hats, shirts, hair`;
   assert.doesNotMatch(spoken, /itself How she moves/i);
 });
 
-
 test("caps long responses", () => {
   const raw = "Word ".repeat(200);
   const spoken = toSpokenText(raw, { maxChars: 120 });
@@ -44,4 +43,33 @@ test("caps long responses", () => {
 test("empty becomes Done", () => {
   assert.equal(toSpokenText("   "), "Done.");
   assert.equal(toSpokenText("```\ncode\n```"), "Done.");
+});
+
+test("thought preview speaks only the last short summary line", () => {
+  const raw = `The research on honeybee face recognition is interesting.
+Adrian Dyer trained bees on face-like stimuli and found configural processing.
+That is lab training, not what wild bees do in a garden.
+
+I'll check the research on honeybee face recognition so the answer matches what was actually shown, not just the headline.`;
+  const spoken = toSpokenThoughtText(raw);
+  assert.match(spoken, /I'll check the research on honeybee face recognition/i);
+  assert.match(spoken, /not just the headline/i);
+  assert.doesNotMatch(spoken, /Adrian Dyer/i);
+  assert.doesNotMatch(spoken, /configural/i);
+});
+
+test("thought preview takes last sentence from a single long paragraph", () => {
+  const raw =
+    "First I consider the lab results and what configural processing means for bees. Then I weigh wild behavior versus training. I'll check the research on honeybee face recognition so the answer matches what was actually shown, not just the headline.";
+  const spoken = toSpokenThoughtText(raw);
+  assert.match(spoken, /I'll check the research/i);
+  assert.doesNotMatch(spoken, /configural processing/i);
+});
+
+test("thought full mode keeps expanded reasoning", () => {
+  const raw =
+    "Lab bees can do faces.\n\nI'll check the research on honeybee face recognition so the answer matches what was actually shown, not just the headline.";
+  const spoken = toSpokenThoughtText(raw, { full: true });
+  assert.match(spoken, /Lab bees can do faces/i);
+  assert.match(spoken, /I'll check the research/i);
 });
