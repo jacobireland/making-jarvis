@@ -7,8 +7,9 @@
 4. **Pause-to-send (VAD)** — with a Deepgram key, Start Listening streams the mic to Flux STT. A pause auto-sends (`EndOfTurn`). Click Stop & Send still works. Set `voiceCursor.autoEndUtterance` to **false** for classic click-to-send. Disable in the service with `VOICE_CURSOR_VAD=0`.
 
 ## Flow
-1. **Start Listening** → speak → **pause to send** (or **Stop Listening & Send**)
-2. Transcript → inject into Agent → spoken thoughts (as blocks complete) → spoken final reply
+1. Click the status-bar **Voice Cursor** item to turn listening **on** (idle) or **off** (while armed)
+2. Speak → **pause to send**, or status-bar click → **Send now**
+3. Transcript → inject into Agent → spoken thoughts → spoken final reply
 
 ## Settings
 | Setting | Default | Meaning |

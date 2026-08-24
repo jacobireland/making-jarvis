@@ -36,8 +36,8 @@ export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel(OUTPUT_CHANNEL);
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.text = "$(unmute) Voice Cursor: idle";
-  status.tooltip = "Voice Cursor: Start Listening";
-  status.command = "voiceCursor.startListening";
+  status.tooltip = "Click to turn listening on";
+  status.command = "voiceCursor.toggleListening";
   status.show();
 
   context.subscriptions.push(output, status);
@@ -249,12 +249,46 @@ export function activate(context: vscode.ExtensionContext): void {
           },
           onInjected: (openedWith) => noteChatOpened(openedWith),
         });
-        } finally {
+      } finally {
         deferStopToCaller = false;
         oneShotRunning = false;
         listenArmed = false;
         resetStatusBarIdle();
       }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("voiceCursor.toggleListening", async () => {
+      if (listenArmed) {
+        const pick = await vscode.window.showQuickPick(
+          [
+            {
+              label: "$(mute) Turn off listening",
+              description: "Stop the mic without sending",
+              action: "off" as const,
+            },
+            {
+              label: "$(send) Send now",
+              description: "Stop and send what we heard",
+              action: "send" as const,
+            },
+          ],
+          {
+            title: "Voice Cursor is listening",
+            placeHolder: "Turn off, or send now",
+            ignoreFocusOut: true,
+          },
+        );
+        if (!pick) return;
+        if (pick.action === "off") {
+          await vscode.commands.executeCommand("voiceCursor.cancelListening");
+        } else {
+          await vscode.commands.executeCommand("voiceCursor.stopListeningAndSend");
+        }
+        return;
+      }
+      await vscode.commands.executeCommand("voiceCursor.startListening");
     }),
   );
 
@@ -282,8 +316,8 @@ export function activate(context: vscode.ExtensionContext): void {
       // Sticky progress — does not vanish like a toast.
       void showStickyListeningUi({
         message: started.autoEnd
-          ? "Pause when done — or click the status-bar mic to send now"
-          : "Click the status-bar mic (“listening — click to send”) when done",
+          ? "Pause when done to send. Click the status-bar item to turn listening off, or send now."
+          : "Click the status-bar item to turn listening off, or send now.",
         onCancel: async () => {
           listenArmed = false;
           try {
@@ -374,11 +408,11 @@ export function activate(context: vscode.ExtensionContext): void {
       ? "1) Voice service auto-starts if needed (or keep npm run service running)"
       : "1) Start service: npm run service",
   );
-  output.appendLine("2) Start Listening or One-Shot Talk");
+  output.appendLine("2) Click the status-bar Voice Cursor item to turn listening on");
   output.appendLine(
     isAutoEndEnabled()
-      ? "3) Speak, then pause — Flux auto-sends. Click the status-bar mic to send now, or Cancel to abort."
-      : "3) While listening: click status-bar mic to Stop & Send",
+      ? "3) Speak, then pause — Flux auto-sends. Click the status-bar item to turn listening off, or send now."
+      : "3) While listening: click the status-bar item to turn off or send",
   );
   output.appendLine("   (sticky notification also stays up — Cancel there to abort)");
   output.appendLine(
@@ -438,8 +472,8 @@ function serviceBase(): string {
 }
 
 function resetStatusBarIdle(): void {
-  status.command = "voiceCursor.startListening";
-  status.tooltip = "Voice Cursor: Start Listening";
+  status.command = "voiceCursor.toggleListening";
+  status.tooltip = "Click to turn listening on";
   status.text = "$(unmute) Voice Cursor: idle";
 }
 
@@ -490,15 +524,10 @@ function isAutoEndEnabled(): boolean {
     .get<boolean>("autoEndUtterance", true);
 }
 
-function applyListeningStatusBar(autoEnd: boolean): void {
-  status.command = "voiceCursor.stopListeningAndSend";
-  if (autoEnd) {
-    status.tooltip = "Pause to send, or click to send now";
-    status.text = "$(mic) Voice Cursor: listening (pause to send)";
-  } else {
-    status.tooltip = "Click to stop listening and send";
-    status.text = "$(mic) Voice Cursor: listening (click to send)";
-  }
+function applyListeningStatusBar(_autoEnd: boolean): void {
+  status.command = "voiceCursor.toggleListening";
+  status.tooltip = "Listening on — click to turn off, or send now";
+  status.text = "$(mic) Voice Cursor: listening (click to turn off)";
 }
 
 /**
@@ -537,8 +566,19 @@ function wsUrl(): string {
 }
 
 function setStatus(state: string, detail?: string): void {
+  status.command = "voiceCursor.toggleListening";
+  if (listenArmed) {
+    applyListeningStatusBar(isAutoEndEnabled());
+    if (detail && detail !== "pause to send" && detail !== "push-to-talk") {
+      status.tooltip = `Listening on — click to turn off, or send now (${detail})`;
+    }
+    return;
+  }
   status.text = `$(unmute) Voice Cursor: ${state}`;
-  status.tooltip = detail ?? "Voice Cursor";
+  status.tooltip =
+    state === "idle"
+      ? "Click to turn listening on"
+      : (detail ?? "Voice Cursor");
 }
 
 function connectSocket(): void {

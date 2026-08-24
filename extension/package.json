@@ -48,6 +48,10 @@
         "title": "Voice Cursor: One-Shot Talk"
       },
       {
+        "command": "voiceCursor.toggleListening",
+        "title": "Voice Cursor: Toggle Listening"
+      },
+      {
         "command": "voiceCursor.startListening",
         "title": "Voice Cursor: Start Listening"
       },

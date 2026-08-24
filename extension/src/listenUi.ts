@@ -35,7 +35,7 @@ export async function showStickyListeningUi(options?: {
       progress.report({
         message:
           options?.message ??
-          "Click the status-bar mic (“listening — click to send”) when done",
+          "Click the status-bar Voice Cursor item to turn listening off, or send now",
       });
 
       return await new Promise<ListenEnd>((resolve) => {

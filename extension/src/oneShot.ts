@@ -260,8 +260,8 @@ export async function runOneShotTalk(options: {
 
   const action = await showStickyListeningUi({
     message: started.autoEnd
-      ? "Pause when done — or click the status-bar mic to send now"
-      : "Click the status-bar mic (“listening — click to send”) when done",
+      ? "Pause when done to send. Click the status-bar item to turn listening off, or send now."
+      : "Click the status-bar item to turn listening off, or send now.",
     onCancel: async () => {
       await fetch(`${options.serviceBase.replace(/\/$/, "")}/stt/cancel`, {
         method: "POST",
