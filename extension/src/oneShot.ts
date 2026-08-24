@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { injectPrompt } from "./inject";
-import { waitForAgentResponseFast } from "./agentWait";
+import { waitForAgentResponseFast, waitForTtsDoneFast } from "./agentWait";
 
 export async function startPushToTalk(options: {
   serviceBase: string;
@@ -145,27 +145,68 @@ export async function stopPushToTalkAndSend(options: {
   log(`[ptt] captured spoken=${captured.spokenText}`);
   setStatus("speaking", captured.spokenText.slice(0, 60));
 
-  const ttsStarted = Date.now();
-  try {
-    const ttsRes = await fetch(`${base}/tts/speak`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: captured.spokenText }),
-    });
-    const ttsBody = (await ttsRes.json()) as { ok?: boolean; error?: string; engine?: string };
-    if (!ttsRes.ok || !ttsBody.ok) {
-      throw new Error(ttsBody.error ?? `TTS HTTP ${ttsRes.status}`);
+  // Service auto-starts TTS on the agent hook (armed by /utterance).
+  // We just wait for tts_done — that removes the extension round-trip from
+  // the critical path before first audio.
+  const ttsWaitStarted = Date.now();
+  let tts = await waitForTtsDoneFast(base, {
+    sinceIso,
+    timeoutMs: 180_000,
+  });
+
+  if (!tts) {
+    log("[ptt] auto-speak missing; falling back to /tts/speak");
+    try {
+      const ttsRes = await fetch(`${base}/tts/speak`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: captured.spokenText }),
+      });
+      const ttsBody = (await ttsRes.json()) as {
+        ok?: boolean;
+        error?: string;
+        engine?: string;
+        firstAudioMs?: number;
+        totalMs?: number;
+      };
+      if (ttsRes.status === 409) {
+        tts = await waitForTtsDoneFast(base, { sinceIso, timeoutMs: 180_000 });
+      } else if (!ttsRes.ok || !ttsBody.ok) {
+        throw new Error(ttsBody.error ?? `TTS HTTP ${ttsRes.status}`);
+      } else {
+        tts = {
+          type: "tts_done",
+          ok: true,
+          engine: ttsBody.engine,
+          firstAudioMs: ttsBody.firstAudioMs,
+          totalMs: ttsBody.totalMs,
+          at: new Date().toISOString(),
+        };
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus("error", message);
+      vscode.window.showErrorMessage(
+        `Voice Cursor captured reply but TTS failed: ${message}. Reply: ${captured.spokenText}`,
+      );
+      return;
     }
-    log(`[ptt] tts engine=${ttsBody.engine} speakWallMs=${Date.now() - ttsStarted}`);
-    setStatus("idle", "done");
-    vscode.window.showInformationMessage("Voice Cursor: done.");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+  }
+
+  if (!tts || !tts.ok) {
+    const message = tts?.error ?? "TTS did not complete";
     setStatus("error", message);
     vscode.window.showErrorMessage(
       `Voice Cursor captured reply but TTS failed: ${message}. Reply: ${captured.spokenText}`,
     );
+    return;
   }
+
+  log(
+    `[ptt] tts engine=${tts.engine} firstAudioMs=${tts.firstAudioMs ?? "n/a"} totalMs=${tts.totalMs ?? "n/a"} (firstAudioMs = delay before sound; totalMs includes full playback) waitMs=${Date.now() - ttsWaitStarted}`,
+  );
+  setStatus("idle", "done");
+  vscode.window.showInformationMessage("Voice Cursor: done.");
 }
 
 /** @deprecated kept for compatibility — prefer start/stop push-to-talk */

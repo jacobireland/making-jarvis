@@ -1,11 +1,17 @@
-import type { AgentResponseEvent } from "@voice-cursor/shared";
+import type { AgentResponseEvent, TtsDoneEvent } from "@voice-cursor/shared";
 
-type Waiter = {
+type AgentWaiter = {
   sinceMs: number;
   resolve: (event: AgentResponseEvent) => void;
 };
 
-const waiters = new Set<Waiter>();
+type TtsWaiter = {
+  sinceMs: number;
+  resolve: (event: TtsDoneEvent) => void;
+};
+
+const agentWaiters = new Set<AgentWaiter>();
+const ttsWaiters = new Set<TtsWaiter>();
 
 /**
  * Called from the WS event handler when an agent_response arrives.
@@ -16,9 +22,19 @@ export function notifyAgentResponse(event: AgentResponseEvent): void {
   const text = (event.text ?? "").trim();
   if (text === "completed" || text === "aborted" || text === "error") return;
 
-  for (const waiter of [...waiters]) {
+  for (const waiter of [...agentWaiters]) {
     if (at >= waiter.sinceMs) {
-      waiters.delete(waiter);
+      agentWaiters.delete(waiter);
+      waiter.resolve(event);
+    }
+  }
+}
+
+export function notifyTtsDone(event: TtsDoneEvent): void {
+  const at = event.at ? Date.parse(event.at) : Date.now();
+  for (const waiter of [...ttsWaiters]) {
+    if (at >= waiter.sinceMs) {
+      ttsWaiters.delete(waiter);
       waiter.resolve(event);
     }
   }
@@ -54,6 +70,24 @@ async function fetchLatestAgentResponse(
   return null;
 }
 
+async function fetchLatestTtsDone(
+  serviceBase: string,
+  sinceMs: number,
+): Promise<TtsDoneEvent | null> {
+  try {
+    const res = await fetch(`${serviceBase.replace(/\/$/, "")}/events?limit=40`);
+    const body = (await res.json()) as { events?: TtsDoneEvent[] };
+    for (const event of [...(body.events ?? [])].reverse()) {
+      if (event.type !== "tts_done") continue;
+      const at = event.at ? Date.parse(event.at) : 0;
+      if (at && at >= sinceMs) return event;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 /**
  * Wait for the next agent_response at/after sinceIso.
  * Uses WS notify + fast HTTP poll in parallel so speech starts ASAP.
@@ -74,13 +108,13 @@ export async function waitForAgentResponseFast(
     }) => {
       if (settled) return;
       settled = true;
-      waiters.delete(waiter);
+      agentWaiters.delete(waiter);
       clearInterval(pollTimer);
       clearTimeout(timeoutTimer);
       resolve(result);
     };
 
-    const waiter: Waiter = {
+    const waiter: AgentWaiter = {
       sinceMs,
       resolve: (event) => {
         finish({
@@ -90,7 +124,7 @@ export async function waitForAgentResponseFast(
         });
       },
     };
-    waiters.add(waiter);
+    agentWaiters.add(waiter);
 
     const checkHttp = async () => {
       const hit = await fetchLatestAgentResponse(serviceBase, sinceMs);
@@ -110,6 +144,47 @@ export async function waitForAgentResponseFast(
 
     const timeoutTimer = setTimeout(() => {
       finish({ ok: false });
+    }, timeoutMs);
+  });
+}
+
+/** Wait for auto-speak (or manual speak) to finish after sinceIso. */
+export async function waitForTtsDoneFast(
+  serviceBase: string,
+  options: { sinceIso: string; timeoutMs?: number },
+): Promise<TtsDoneEvent | null> {
+  const timeoutMs = options.timeoutMs ?? 180_000;
+  const sinceMs = Date.parse(options.sinceIso);
+
+  return await new Promise((resolve) => {
+    let settled = false;
+    const finish = (event: TtsDoneEvent | null) => {
+      if (settled) return;
+      settled = true;
+      ttsWaiters.delete(waiter);
+      clearInterval(pollTimer);
+      clearTimeout(timeoutTimer);
+      resolve(event);
+    };
+
+    const waiter: TtsWaiter = {
+      sinceMs,
+      resolve: (event) => finish(event),
+    };
+    ttsWaiters.add(waiter);
+
+    const checkHttp = async () => {
+      const hit = await fetchLatestTtsDone(serviceBase, sinceMs);
+      if (hit) finish(hit);
+    };
+
+    void checkHttp();
+    const pollTimer = setInterval(() => {
+      void checkHttp();
+    }, 150);
+
+    const timeoutTimer = setTimeout(() => {
+      finish(null);
     }, timeoutMs);
   });
 }

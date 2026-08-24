@@ -25,13 +25,15 @@ loadDotEnv();
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.3.1";
+const VERSION = "0.3.2";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
 const MAX_EVENTS = 200;
 const sockets = new Set<WebSocket>();
 let speechBusy = false;
+/** After /utterance, the next afterAgentResponse should auto-speak. */
+let autoSpeakArmed = false;
 function pushEvent(event: VoiceCursorEvent): void {
   events.push(event);
   if (events.length > MAX_EVENTS) events.shift();
@@ -49,6 +51,46 @@ function setState(next: VoiceCursorState, detail?: string): void {
     detail,
     at: new Date().toISOString(),
   });
+}
+
+async function speakAndAnnounce(text: string, source: string): Promise<void> {
+  if (!text.trim()) return;
+  if (speechBusy) {
+    console.warn(`[voice-cursor] skip speak (${source}): speech busy`);
+    return;
+  }
+  speechBusy = true;
+  setState("speaking", text.slice(0, 80));
+  const started = Date.now();
+  try {
+    const result = await speakText(text);
+    console.log(
+      `[voice-cursor] speak done source=${source} engine=${result.engine} firstAudioMs=${result.firstAudioMs ?? "n/a"} totalMs=${result.totalMs ?? Date.now() - started}`,
+    );
+    pushEvent({
+      type: "tts_done",
+      ok: true,
+      engine: result.engine,
+      voice: result.voice,
+      firstAudioMs: result.firstAudioMs,
+      totalMs: result.totalMs ?? Date.now() - started,
+      at: new Date().toISOString(),
+    });
+    setState("idle", "spoke");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[voice-cursor] speak failed source=${source}: ${message}`);
+    pushEvent({
+      type: "tts_done",
+      ok: false,
+      error: message,
+      totalMs: Date.now() - started,
+      at: new Date().toISOString(),
+    });
+    setState("error", message);
+  } finally {
+    speechBusy = false;
+  }
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -154,13 +196,21 @@ const server = http.createServer(async (req, res) => {
       const body = (await readJson(req)) as Record<string, unknown>;
       const event = asAgentResponse(body);
       pushEvent(event);
-      setState("idle", "agent response received");
+      const shouldAutoSpeak = autoSpeakArmed;
+      autoSpeakArmed = false;
       console.log(
         "[voice-cursor] agent_response",
         event.spokenText.slice(0, 120),
-        `(chars=${event.text.length})`,
+        `(chars=${event.text.length} autoSpeak=${shouldAutoSpeak})`,
       );
-      json(res, 200, { ok: true, spokenText: event.spokenText });
+      // Reply to the hook immediately, then start TTS so first audio isn't
+      // blocked on the extension noticing the WS event and POSTing /tts/speak.
+      json(res, 200, { ok: true, spokenText: event.spokenText, autoSpeak: shouldAutoSpeak });
+      if (shouldAutoSpeak && event.spokenText.trim()) {
+        void speakAndAnnounce(event.spokenText, "after-agent-response");
+      } else {
+        setState("idle", "agent response received");
+      }
       return;
     }
 
@@ -187,13 +237,14 @@ const server = http.createServer(async (req, res) => {
         json(res, 400, { ok: false, error: "text required" });
         return;
       }
+      autoSpeakArmed = true;
       pushEvent({
         type: "utterance",
         text,
         receivedAt: new Date().toISOString(),
       });
       setState("waiting_agent", text);
-      json(res, 200, { ok: true });
+      json(res, 200, { ok: true, autoSpeakArmed: true });
       return;
     }
 
@@ -315,14 +366,32 @@ const server = http.createServer(async (req, res) => {
         json(res, 400, { ok: false, error: "text required" });
         return;
       }
+      // Manual speak disarms auto-speak to avoid double playback.
+      autoSpeakArmed = false;
       speechBusy = true;
       setState("speaking", text.slice(0, 80));
       try {
         const result = await speakText(text);
+        pushEvent({
+          type: "tts_done",
+          ok: true,
+          engine: result.engine,
+          voice: result.voice,
+          firstAudioMs: result.firstAudioMs,
+          totalMs: result.totalMs,
+          at: new Date().toISOString(),
+        });
         setState("idle", "spoke");
         json(res, 200, { ok: true, ...result });
       } catch (error) {
-        setState("error", error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        pushEvent({
+          type: "tts_done",
+          ok: false,
+          error: message,
+          at: new Date().toISOString(),
+        });
+        setState("error", message);
         throw error;
       } finally {
         speechBusy = false;

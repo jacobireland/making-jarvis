@@ -30,6 +30,19 @@ export type StateEvent = {
   at: string;
 };
 
+export type TtsDoneEvent = {
+  type: "tts_done";
+  ok: boolean;
+  engine?: string;
+  voice?: string;
+  /** Ms from speak start until first audio playback begins (synth of first chunk). */
+  firstAudioMs?: number;
+  /** Ms for full synth+playback wall time. */
+  totalMs?: number;
+  error?: string;
+  at: string;
+};
+
 export type HealthResponse = {
   ok: true;
   service: "voice-cursor";
@@ -39,4 +52,8 @@ export type HealthResponse = {
   eventCount: number;
 };
 
-export type VoiceCursorEvent = AgentResponseEvent | UtteranceEvent | StateEvent;
+export type VoiceCursorEvent =
+  | AgentResponseEvent
+  | UtteranceEvent
+  | StateEvent
+  | TtsDoneEvent;

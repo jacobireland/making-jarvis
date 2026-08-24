@@ -5,7 +5,7 @@ import { injectPrompt, type InjectionStrategy } from "./inject";
 import { inventoryAgentCommands, writeInventoryMarkdown } from "./inventory";
 import { diagnoseCapture } from "./diagnose";
 import { waitForCapturedMarker } from "./proveSubmit";
-import { notifyAgentResponse } from "./agentWait";
+import { notifyAgentResponse, notifyTtsDone } from "./agentWait";
 import { runOneShotTalk, startPushToTalk, stopPushToTalkAndSend } from "./oneShot";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
@@ -397,6 +397,13 @@ function handleEvent(event: VoiceCursorEvent): void {
         `Voice Cursor captured: ${event.spokenText.slice(0, 120)}`,
       );
     }
+    return;
+  }
+  if (event.type === "tts_done") {
+    notifyTtsDone(event);
+    output.appendLine(
+      `[tts_done] ok=${event.ok} engine=${event.engine ?? "?"} firstAudioMs=${event.firstAudioMs ?? "n/a"} totalMs=${event.totalMs ?? "n/a"}`,
+    );
     return;
   }
   if (event.type === "state") {

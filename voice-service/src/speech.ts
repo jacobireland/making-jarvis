@@ -754,10 +754,16 @@ export async function warmTts(): Promise<void> {
   }
 }
 
-async function speakWithEdge(text: string): Promise<{ engine: string; voice: string }> {
+async function speakWithEdge(text: string): Promise<{
+  engine: string;
+  voice: string;
+  firstAudioMs?: number;
+  totalMs: number;
+}> {
   const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
   const rate = resolveTtsRate();
   const totalStarted = Date.now();
+  let firstAudioMs: number | undefined;
   const tts = await getEdgeClient(voice);
   const prosody = new ProsodyOptions();
   prosody.rate = rate;
@@ -789,6 +795,10 @@ async function speakWithEdge(text: string): Promise<{ engine: string; voice: str
       const audioFilePath = await nextFile!;
       nextFile =
         i + 1 < chunks.length ? synthChunk(chunks[i + 1], i + 1) : null;
+      if (firstAudioMs === undefined) {
+        firstAudioMs = Date.now() - totalStarted;
+        console.log(`[voice-cursor] edge-tts firstAudioMs=${firstAudioMs}`);
+      }
       await playAudioFile(audioFilePath);
       try {
         fs.unlinkSync(audioFilePath);
@@ -804,15 +814,23 @@ async function speakWithEdge(text: string): Promise<{ engine: string; voice: str
     }
   }
 
-  console.log(`[voice-cursor] edge-tts totalMs=${Date.now() - totalStarted}`);
-  return { engine: "edge-tts", voice };
+  const totalMs = Date.now() - totalStarted;
+  console.log(
+    `[voice-cursor] edge-tts totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"}`,
+  );
+  return { engine: "edge-tts", voice, firstAudioMs, totalMs };
 }
 
-async function speakWithWindowsSapi(text: string): Promise<{ engine: string }> {
+async function speakWithWindowsSapi(text: string): Promise<{
+  engine: string;
+  firstAudioMs?: number;
+  totalMs: number;
+}> {
   const script = resolveRepoScript("tts-windows.ps1");
   if (!script) {
     throw new Error("scripts/tts-windows.ps1 not found");
   }
+  const started = Date.now();
   await execFileAsync(
     "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Text", text],
@@ -822,12 +840,18 @@ async function speakWithWindowsSapi(text: string): Promise<{ engine: string }> {
       maxBuffer: 1024 * 1024,
     },
   );
-  return { engine: "windows-sapi" };
+  const totalMs = Date.now() - started;
+  return { engine: "windows-sapi", firstAudioMs: 0, totalMs };
 }
 
-export async function speakText(text: string): Promise<{ engine: string; voice?: string }> {
+export async function speakText(text: string): Promise<{
+  engine: string;
+  voice?: string;
+  firstAudioMs?: number;
+  totalMs?: number;
+}> {
   const cleaned = text.trim();
-  if (!cleaned) return { engine: "none" };
+  if (!cleaned) return { engine: "none", totalMs: 0 };
 
   const preferred = (process.env.VOICE_CURSOR_TTS ?? "edge").toLowerCase();
 
