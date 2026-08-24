@@ -8,13 +8,11 @@ import {
   type VoiceCursorEvent,
   type VoiceCursorState,
 } from "@voice-cursor/shared";
-import { listenOnce, speakText, loadDotEnv, describeSttConfig } from "./speech";
-
-loadDotEnv();
+import { listenOnce, speakText, describeSttConfig } from "./speech";
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.2.1";
+const VERSION = "0.2.2";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
@@ -283,7 +281,5 @@ server.listen(PORT, HOST, () => {
   const stt = describeSttConfig();
   console.log(`[voice-cursor] listening on http://${HOST}:${PORT}`);
   console.log(`[voice-cursor] websocket ws://${HOST}:${PORT}/ws`);
-  console.log(
-    `[voice-cursor] STT preferred=${stt.engine} resolved=${stt.resolved} openai=${stt.hasOpenAI} groq=${stt.hasGroq}`,
-  );
+  console.log(`[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved}`);
 });
