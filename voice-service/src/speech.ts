@@ -1065,9 +1065,38 @@ async function synthDeepgramChunk(text: string, outPath: string): Promise<string
   return outPath;
 }
 
+/** Split for Flux turns: one sentence per Speak/Flush (smooth MCI playback). */
+function sentencesForFluxTts(text: string, maxChars = 500): string[] {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+
+  const sentences =
+    cleaned.match(/[^.!?…]+(?:[.!?…]["']?|$)/g)?.map((s) => s.trim()).filter(Boolean) ?? [
+      cleaned,
+    ];
+
+  const out: string[] = [];
+  for (const sentence of sentences) {
+    if (sentence.length <= maxChars) {
+      out.push(sentence);
+      continue;
+    }
+    // Hard-wrap a run-on sentence so the first clip isn't huge.
+    let remaining = sentence;
+    while (remaining.length > maxChars) {
+      let cut = remaining.lastIndexOf(" ", maxChars);
+      if (cut < maxChars * 0.4) cut = maxChars;
+      out.push(remaining.slice(0, cut).trim());
+      remaining = remaining.slice(cut).trim();
+    }
+    if (remaining) out.push(remaining);
+  }
+  return out;
+}
+
 /**
- * Flux WebSocket streaming: play WAV segments as PCM arrives (low first-audio latency).
- * Falls back to REST batch if the socket path fails.
+ * Flux WebSocket: one sentence per turn, play each sentence as a single WAV.
+ * Avoids glitchy ~120ms MCI cut-points; still pipelines sentence N+1 while playing N.
  */
 async function speakWithDeepgramFluxStream(text: string): Promise<{
   engine: string;
@@ -1079,84 +1108,75 @@ async function speakWithDeepgramFluxStream(text: string): Promise<{
   const speed = resolveDeepgramTtsSpeed();
   const totalStarted = Date.now();
   let firstAudioMs: number | undefined;
-
-  // ~120ms first segment so playback can start before the full reply is synthesized.
-  const bytesPerSec = FLUX_TTS_SAMPLE_RATE * 2; // mono linear16
-  const firstThreshold = Math.floor(bytesPerSec * 0.12);
-  const nextThreshold = Math.floor(bytesPerSec * 0.4);
+  const sentences = sentencesForFluxTts(text);
 
   console.log(
-    `[voice-cursor] deepgram-tts-ws speak chars=${text.length} voice=${voice} speed=${speed} sampleRate=${FLUX_TTS_SAMPLE_RATE}`,
+    `[voice-cursor] deepgram-tts-ws speak sentences=${sentences.length} chars=${text.length} voice=${voice} speed=${speed} sampleRate=${FLUX_TTS_SAMPLE_RATE}`,
   );
 
   const session = await ensureFluxSession();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-dg-ws-"));
-  let pcmBuf = Buffer.alloc(0);
-  let chunkIndex = 0;
-  let playChain: Promise<void> = Promise.resolve();
-  let playError: Error | undefined;
 
-  const enqueuePlay = (wavPath: string, index: number, bytes: number) => {
-    playChain = playChain.then(async () => {
-      if (playError) return;
-      try {
-        if (firstAudioMs === undefined) {
-          firstAudioMs = Date.now() - totalStarted;
-          console.log(
-            `[voice-cursor] deepgram-tts-ws firstAudioMs=${firstAudioMs} chunk=${index} bytes=${bytes}`,
-          );
-        }
-        await playAudioFile(wavPath);
-      } catch (error) {
-        playError = error instanceof Error ? error : new Error(String(error));
-        throw playError;
-      } finally {
-        try {
-          fs.unlinkSync(wavPath);
-        } catch {
-          // ignore
-        }
-      }
+  const synthSentence = async (
+    sentence: string,
+    index: number,
+  ): Promise<{ wavPath: string; pcmBytes: number; firstByteMs?: number }> => {
+    const synthStarted = Date.now();
+    const parts: Buffer[] = [];
+    const turn = await session.speakTurn(sentence, (pcm) => {
+      parts.push(pcm);
     });
-  };
-
-  const emitSegments = (flushAll: boolean) => {
-    while (true) {
-      const threshold = chunkIndex === 0 ? firstThreshold : nextThreshold;
-      if (!flushAll && pcmBuf.length < threshold) break;
-      if (pcmBuf.length === 0) break;
-      // Keep even byte length for 16-bit samples.
-      let take = flushAll ? pcmBuf.length : threshold;
-      if (take % 2 === 1) take -= 1;
-      if (take <= 0) break;
-      if (!flushAll && take < threshold) break;
-
-      const segment = pcmBuf.subarray(0, take);
-      pcmBuf = pcmBuf.subarray(take);
-      const index = chunkIndex++;
-      const wavPath = path.join(tmpDir, `chunk-${index}.wav`);
-      writePcmWavFile(wavPath, segment);
-      console.log(
-        `[voice-cursor] deepgram-tts-ws segment=${index} pcmBytes=${segment.length} flush=${flushAll}`,
-      );
-      enqueuePlay(wavPath, index, segment.length);
+    const pcmBuf = Buffer.concat(parts);
+    if (pcmBuf.length < 2) {
+      throw new Error(`Flux TTS sentence ${index} produced no audio`);
     }
+    const wavPath = path.join(tmpDir, `sentence-${index}.wav`);
+    writePcmWavFile(wavPath, pcmBuf);
+    console.log(
+      `[voice-cursor] deepgram-tts-ws sentence=${index} chars=${sentence.length} pcmBytes=${pcmBuf.length} firstByteMs=${turn.firstByteMs ?? "n/a"} synthMs=${Date.now() - synthStarted}`,
+    );
+    return {
+      wavPath,
+      pcmBytes: pcmBuf.length,
+      firstByteMs: turn.firstByteMs,
+    };
   };
 
   try {
-    const turn = await session.speakTurn(text, (pcm) => {
-      pcmBuf = Buffer.concat([pcmBuf, pcm]);
-      emitSegments(false);
-    });
-    emitSegments(true);
-    await playChain;
-    if (playError) throw playError;
-    if (chunkIndex === 0 || (firstAudioMs === undefined && turn.audioBytes === 0)) {
+    // Pipeline: synthesize N+1 while playing N (first sentence starts ASAP).
+    let nextFile =
+      sentences.length > 0 ? synthSentence(sentences[0], 0) : null;
+    let played = 0;
+
+    for (let i = 0; i < sentences.length; i++) {
+      const audio = await nextFile!;
+      nextFile =
+        i + 1 < sentences.length
+          ? synthSentence(sentences[i + 1], i + 1)
+          : null;
+
+      if (firstAudioMs === undefined) {
+        firstAudioMs = Date.now() - totalStarted;
+        console.log(
+          `[voice-cursor] deepgram-tts-ws firstAudioMs=${firstAudioMs} sentence=${i} bytes=${audio.pcmBytes}`,
+        );
+      }
+      await playAudioFile(audio.wavPath);
+      played += 1;
+      try {
+        fs.unlinkSync(audio.wavPath);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (played === 0) {
       throw new Error("Flux TTS produced no audio");
     }
+
     const totalMs = Date.now() - totalStarted;
     console.log(
-      `[voice-cursor] deepgram-tts-ws totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} firstByteMs=${turn.firstByteMs ?? "n/a"} audioBytes=${turn.audioBytes} segments=${chunkIndex}`,
+      `[voice-cursor] deepgram-tts-ws totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"} sentences=${played}`,
     );
     return {
       engine: "deepgram-tts-ws",
