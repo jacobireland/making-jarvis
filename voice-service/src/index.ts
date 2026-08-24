@@ -207,7 +207,7 @@ function asAgentThought(body: Record<string, unknown>): AgentThoughtEvent {
       : typeof body.durationMs === "number"
         ? body.durationMs
         : undefined;
-  // Default: chat preview one-liner only (not the expanded Thought body).
+  // Default: last sentence only (not the expanded Thought body).
   const spokenText = toSpokenThoughtText(text, {
     maxChars: isSpeakFullThoughtsEnabled() ? maxSpokenChars() : 320,
     full: isSpeakFullThoughtsEnabled(),

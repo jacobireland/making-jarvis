@@ -45,7 +45,7 @@ test("empty becomes Done", () => {
   assert.equal(toSpokenText("```\ncode\n```"), "Done.");
 });
 
-test("thought preview speaks only the last short summary line", () => {
+test("thought preview speaks only the last sentence", () => {
   const raw = `The research on honeybee face recognition is interesting.
 Adrian Dyer trained bees on face-like stimuli and found configural processing.
 That is lab training, not what wild bees do in a garden.
@@ -56,6 +56,7 @@ I'll check the research on honeybee face recognition so the answer matches what 
   assert.match(spoken, /not just the headline/i);
   assert.doesNotMatch(spoken, /Adrian Dyer/i);
   assert.doesNotMatch(spoken, /configural/i);
+  assert.doesNotMatch(spoken, /wild bees/i);
 });
 
 test("thought preview takes last sentence from a single long paragraph", () => {

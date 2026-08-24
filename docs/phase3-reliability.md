@@ -3,7 +3,7 @@
 ## What's new
 1. **Auto-start voice service** — on activate (and on reconnect), the extension starts `voice-service/dist/index.js` if `/health` is down (`voiceCursor.autoStartService`, default on).
 2. **Same-thread chat** — `voiceCursor.oneShotNewChat` defaults to **false**: first turn this session opens one Agent chat, later turns stay in that thread. Set it **true** for a new chat every turn.
-3. **Speak thinking blocks** — `afterAgentThought` speaks the short Thought preview line Cursor shows in chat (not the full expanded body). Set `VOICE_CURSOR_SPEAK_FULL_THOUGHTS=1` for the full text; disable entirely with `VOICE_CURSOR_SPEAK_THOUGHTS=0`.
+3. **Speak thinking blocks** — `afterAgentThought` speaks the **last sentence** of each Thought (the usual chat preview line). Set `VOICE_CURSOR_SPEAK_FULL_THOUGHTS=1` for the full text; disable entirely with `VOICE_CURSOR_SPEAK_THOUGHTS=0`.
 
 ## Flow (unchanged)
 1. **Start Listening** → speak → **Stop Listening & Send**
@@ -22,7 +22,7 @@
 | Variable | Default | Meaning |
 |---|---|---|
 | `VOICE_CURSOR_SPEAK_THOUGHTS` | `true` | Speak `afterAgentThought` blocks during an armed voice turn |
-| `VOICE_CURSOR_SPEAK_FULL_THOUGHTS` | `false` | `true` = full expanded Thought; default = short chat preview line only |
+| `VOICE_CURSOR_SPEAK_FULL_THOUGHTS` | `false` | `true` = full expanded Thought; default = last sentence only |
 
 ## Notes
 - Auto-start needs a prior `npm run build` so `voice-service/dist/index.js` exists.

@@ -104,9 +104,8 @@ export function toSpokenText(raw: string, options?: { maxChars?: number }): stri
 }
 
 /**
- * Cursor's chat UI shows a short Thought preview line; `afterAgentThought`
- * delivers the full expanded block. Prefer that preview: the last short
- * paragraph / sentence (often an "I'll check…" line under the reasoning).
+ * Cursor's chat UI shows a short Thought preview; `afterAgentThought` delivers
+ * the full expanded block. Speak only the last sentence of that block.
  */
 export function toSpokenThoughtText(
   raw: string,
@@ -120,35 +119,8 @@ export function toSpokenThoughtText(
   const text = raw.replace(/\r\n/g, "\n").trim();
   if (!text) return "";
 
-  const paragraphs = text
-    .split(/\n{2,}/)
-    .map((block) =>
-      block
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim(),
-    )
-    .filter(Boolean);
-
-  if (paragraphs.length === 0) return "";
-
-  // Preview line is usually the final short paragraph under the long reasoning.
-  let preview = paragraphs[paragraphs.length - 1] ?? "";
-
-  // Single long blob (or last paragraph still huge): take its last sentence,
-  // which matches the collapsed Thought one-liner in Cursor's UI.
-  if (preview.length > maxChars || countSentences(preview) > 2) {
-    preview = lastSentence(preview) || preview;
-  }
-
-  // If we still have a wall of text, fall back to the first sentence.
-  if (preview.length > maxChars) {
-    preview = firstSentence(paragraphs[0] ?? preview) || preview;
-  }
-
+  const flat = text.replace(/\s+/g, " ").trim();
+  const preview = lastSentence(flat) || flat;
   const spoken = toSpokenText(preview, { maxChars });
   return spoken === "Done." ? "" : spoken;
 }
@@ -166,16 +138,6 @@ function pushSpokenUnit(out: string[], unit: string): void {
 function ensureSentence(text: string): string {
   if (/[.!?…]["']?$/.test(text)) return text;
   return `${text}.`;
-}
-
-function countSentences(text: string): number {
-  const parts = text.match(/[^.!?…]+[.!?…]+/g);
-  return parts?.length ?? (text.trim() ? 1 : 0);
-}
-
-function firstSentence(text: string): string {
-  const match = text.match(/^[\s\S]+?[.!?…](?:["')\]]+)?(?=\s|$)/);
-  return (match?.[0] ?? text).trim();
 }
 
 function lastSentence(text: string): string {
