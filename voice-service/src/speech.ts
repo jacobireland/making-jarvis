@@ -1,9 +1,13 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 
 const execFileAsync = promisify(execFile);
+
+const DEFAULT_EDGE_VOICE = "en-PH-JamesNeural";
 
 export function resolveRepoScript(name: string): string | undefined {
   const candidates = [
@@ -24,6 +28,41 @@ export function describeSttConfig(): {
     engine: "windows",
     resolved: process.platform === "win32" ? "windows-system-speech" : "unsupported",
   };
+}
+
+export function describeTtsConfig(): {
+  engine: string;
+  voice: string;
+} {
+  const engine = (process.env.VOICE_CURSOR_TTS ?? "edge").toLowerCase();
+  const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
+  return { engine, voice };
+}
+
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function chunkForTts(text: string, maxChars = 900): string[] {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (cleaned.length <= maxChars) return [cleaned];
+
+  const chunks: string[] = [];
+  let remaining = cleaned;
+  while (remaining.length > maxChars) {
+    let cut = remaining.lastIndexOf(". ", maxChars);
+    if (cut < maxChars * 0.4) cut = remaining.lastIndexOf(" ", maxChars);
+    if (cut < maxChars * 0.4) cut = maxChars;
+    chunks.push(remaining.slice(0, cut + 1).trim());
+    remaining = remaining.slice(cut + 1).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
 }
 
 export async function listenOnce(options: {
@@ -67,44 +106,104 @@ export async function listenOnce(options: {
   return { text, engine: "windows-system-speech" };
 }
 
-export async function speakText(text: string): Promise<{ engine: string }> {
-  const cleaned = text.trim();
-  if (!cleaned) return { engine: "none" };
-
+async function playAudioFile(filePath: string): Promise<void> {
   if (process.platform === "win32") {
-    const script = resolveRepoScript("tts-windows.ps1");
-    if (!script) {
-      throw new Error("scripts/tts-windows.ps1 not found");
-    }
+    const script = resolveRepoScript("play-audio-windows.ps1");
+    if (!script) throw new Error("scripts/play-audio-windows.ps1 not found");
     await execFileAsync(
       "powershell.exe",
-      [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        script,
-        "-Text",
-        cleaned,
-      ],
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Path", filePath],
       {
         windowsHide: true,
-        timeout: Math.max(30_000, cleaned.length * 80),
+        timeout: 10 * 60 * 1000,
         maxBuffer: 1024 * 1024,
       },
     );
-    return { engine: "windows-sapi" };
+    return;
   }
 
   if (process.platform === "darwin") {
-    await execFileAsync("say", [cleaned], { timeout: 60_000 });
-    return { engine: "macos-say" };
+    await execFileAsync("afplay", [filePath], { timeout: 10 * 60 * 1000 });
+    return;
   }
 
   try {
-    await execFileAsync("espeak", [cleaned], { timeout: 60_000 });
-    return { engine: "espeak" };
+    await execFileAsync("ffplay", ["-nodisp", "-autoexit", filePath], {
+      timeout: 10 * 60 * 1000,
+    });
   } catch {
-    throw new Error("No TTS engine available (install espeak or use Windows/macOS)");
+    throw new Error("Could not play audio (install ffplay or use Windows/macOS)");
+  }
+}
+
+async function speakWithEdge(text: string): Promise<{ engine: string; voice: string }> {
+  const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
+  const tts = new MsEdgeTTS();
+  await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-tts-"));
+  try {
+    for (const chunk of chunkForTts(text)) {
+      const { audioFilePath } = await tts.toFile(tmpDir, escapeXml(chunk));
+      await playAudioFile(audioFilePath);
+      try {
+        fs.unlinkSync(audioFilePath);
+      } catch {
+        // ignore
+      }
+    }
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+
+  return { engine: "edge-tts", voice };
+}
+
+async function speakWithWindowsSapi(text: string): Promise<{ engine: string }> {
+  const script = resolveRepoScript("tts-windows.ps1");
+  if (!script) {
+    throw new Error("scripts/tts-windows.ps1 not found");
+  }
+  await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Text", text],
+    {
+      windowsHide: true,
+      timeout: Math.max(30_000, text.length * 80),
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  return { engine: "windows-sapi" };
+}
+
+export async function speakText(text: string): Promise<{ engine: string; voice?: string }> {
+  const cleaned = text.trim();
+  if (!cleaned) return { engine: "none" };
+
+  const preferred = (process.env.VOICE_CURSOR_TTS ?? "edge").toLowerCase();
+
+  if (preferred === "windows") {
+    if (process.platform !== "win32") {
+      throw new Error("VOICE_CURSOR_TTS=windows is only supported on Windows");
+    }
+    return speakWithWindowsSapi(cleaned);
+  }
+
+  try {
+    return await speakWithEdge(cleaned);
+  } catch (error) {
+    console.warn(
+      "[voice-cursor] Edge TTS failed, falling back to Windows SAPI:",
+      error instanceof Error ? error.message : error,
+    );
+    if (process.platform === "win32") {
+      const result = await speakWithWindowsSapi(cleaned);
+      return result;
+    }
+    throw error;
   }
 }

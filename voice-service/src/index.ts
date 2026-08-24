@@ -8,11 +8,11 @@ import {
   type VoiceCursorEvent,
   type VoiceCursorState,
 } from "@voice-cursor/shared";
-import { listenOnce, speakText, describeSttConfig } from "./speech";
+import { listenOnce, speakText, describeSttConfig, describeTtsConfig } from "./speech";
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.2.2";
+const VERSION = "0.2.3";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
@@ -101,7 +101,10 @@ const server = http.createServer(async (req, res) => {
       const last = [...events].reverse().find((e) => e.type === "agent_response") as
         | AgentResponseEvent
         | undefined;
-      const body: HealthResponse & { stt?: ReturnType<typeof describeSttConfig> } = {
+      const body: HealthResponse & {
+        stt?: ReturnType<typeof describeSttConfig>;
+        tts?: ReturnType<typeof describeTtsConfig>;
+      } = {
         ok: true,
         service: "voice-cursor",
         version: VERSION,
@@ -109,6 +112,7 @@ const server = http.createServer(async (req, res) => {
         lastAgentResponseAt: last?.receivedAt,
         eventCount: events.length,
         stt: describeSttConfig(),
+        tts: describeTtsConfig(),
       };
       json(res, 200, body);
       return;
@@ -279,7 +283,9 @@ wss.on("connection", (socket) => {
 
 server.listen(PORT, HOST, () => {
   const stt = describeSttConfig();
+  const tts = describeTtsConfig();
   console.log(`[voice-cursor] listening on http://${HOST}:${PORT}`);
   console.log(`[voice-cursor] websocket ws://${HOST}:${PORT}/ws`);
   console.log(`[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved}`);
+  console.log(`[voice-cursor] TTS engine=${tts.engine} voice=${tts.voice}`);
 });

@@ -7,10 +7,19 @@ Status: implemented (Windows System.Speech STT + SAPI TTS)
 2. Confirm → mic listens ~N seconds (`voiceCursor.listenSeconds`, default 7)
 3. Confirm transcript → inject + auto-submit into Cursor Agent
 4. Wait for hook capture
-5. Speak `spokenText` via Windows SAPI
+5. Speak `spokenText` via **Edge TTS** (`en-PH-JamesNeural` by default), with Windows SAPI fallback
 
-## STT
-Uses **Windows System.Speech** only (free, local). Accuracy is limited; speak clearly.
+## TTS
+Default voice: **English (Philippines) James** — `en-PH-JamesNeural`
+
+Optional env vars when starting the service:
+```powershell
+$env:VOICE_CURSOR_TTS="edge"                 # or "windows"
+$env:VOICE_CURSOR_TTS_VOICE="en-PH-JamesNeural"
+npm run service
+```
+
+Needs internet for Edge TTS. If Edge fails, it falls back to Windows SAPI.
 
 ## Requirements (Windows)
 - Default microphone working

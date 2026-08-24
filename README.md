@@ -7,7 +7,7 @@ Voice interface to the **existing Cursor Agent**. Cursor remains responsible for
 | Piece | Role |
 |---|---|
 | `extension/` | One-Shot Talk, inject/auto-submit, capture display |
-| `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Windows STT/TTS |
+| `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Windows STT + Edge TTS |
 | `.cursor/hooks/` | `afterAgentResponse` → service |
 | `scripts/` | Windows Enter / STT / TTS helpers |
 | `shared/` | Event types + `toSpokenText()` |
