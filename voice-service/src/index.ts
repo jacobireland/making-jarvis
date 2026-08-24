@@ -34,7 +34,7 @@ process.on("unhandledRejection", (reason) => {
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.3.6";
+const VERSION = "0.4.0";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
@@ -402,10 +402,30 @@ const server = http.createServer(async (req, res) => {
       }
       const body = (await readJson(req)) as Record<string, unknown>;
       const maxSeconds = typeof body.maxSeconds === "number" ? body.maxSeconds : 120;
+      const autoEnd = body.autoEnd !== false;
       speechBusy = true;
       try {
-        const started = await startMicSession({ maxSeconds });
-        setState("listening", `push-to-talk ${started.id}`);
+        const started = await startMicSession({
+          maxSeconds,
+          autoEnd,
+          onPartial: (text) => {
+            setState("listening", text.slice(0, 80));
+          },
+          onUtteranceEnd: (result) => {
+            pushEvent({
+              type: "utterance_end",
+              text: result.text,
+              engine: result.engine,
+              confidence: result.confidence,
+              at: new Date().toISOString(),
+            });
+            setState("transcribing", "end of utterance");
+          },
+        });
+        setState(
+          "listening",
+          started.autoEnd ? `pause to send ${started.id}` : `push-to-talk ${started.id}`,
+        );
         json(res, 200, { ok: true, ...started });
       } catch (error) {
         speechBusy = false;
@@ -525,7 +545,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[voice-cursor] listening on http://${HOST}:${PORT}`);
   console.log(`[voice-cursor] websocket ws://${HOST}:${PORT}/ws`);
   console.log(
-    `[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved} deepgram=${stt.hasDeepgram} openai=${stt.hasOpenAI}`,
+    `[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved} deepgram=${stt.hasDeepgram} openai=${stt.hasOpenAI} vad=${stt.vad} streamListen=${stt.streamListen}`,
   );
   console.log(
     `[voice-cursor] TTS engine=${tts.engine} resolved=${tts.resolved} voice=${tts.voice} rate=${tts.rate} stream=${tts.stream} deepgram=${tts.hasDeepgram}`,

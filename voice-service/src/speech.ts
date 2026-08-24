@@ -9,6 +9,14 @@ import {
   FLUX_TTS_SAMPLE_RATE,
   writePcmWavFile,
 } from "./flux-tts";
+import {
+  FluxSttSession,
+  FLUX_STT_SAMPLE_RATE,
+  DEFAULT_FLUX_STT_MODEL,
+  shouldCommitFluxTurn,
+  resolveEotThreshold,
+  resolveEotTimeoutMs,
+} from "./flux-stt";
 
 const execFileAsync = promisify(execFile);
 
@@ -109,11 +117,36 @@ export function logAuthHints(): void {
   );
 }
 
+function isVadEnabled(): boolean {
+  const raw = (process.env.VOICE_CURSOR_VAD ?? "true").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
+function isStreamListenEnabled(): boolean {
+  const raw = (process.env.VOICE_CURSOR_STT_STREAM ?? "auto").trim().toLowerCase();
+  if (raw === "off" || raw === "0" || raw === "false" || raw === "wav") return false;
+  return true;
+}
+
+function canStreamFluxStt(): boolean {
+  if (process.platform !== "win32") return false;
+  if (!deepgramKey()) return false;
+  if (!isStreamListenEnabled()) return false;
+  const preferred = (process.env.VOICE_CURSOR_STT ?? "auto").toLowerCase();
+  if (preferred === "windows" || preferred === "openai" || preferred === "whisper-openai") {
+    return false;
+  }
+  return true;
+}
+
 export function describeSttConfig(): {
   engine: string;
   resolved: string;
   hasOpenAI: boolean;
   hasDeepgram: boolean;
+  vad: boolean;
+  streamListen: boolean;
+  eotThreshold?: number;
 } {
   const preferred = (process.env.VOICE_CURSOR_STT ?? "auto").toLowerCase();
   const hasOpenAI = Boolean(openaiKey());
@@ -131,7 +164,16 @@ export function describeSttConfig(): {
     else if (hasOpenAI) resolved = "whisper-openai";
   }
 
-  return { engine: preferred, resolved, hasOpenAI, hasDeepgram };
+  const streamListen = canStreamFluxStt();
+  return {
+    engine: preferred,
+    resolved,
+    hasOpenAI,
+    hasDeepgram,
+    vad: isVadEnabled() && streamListen,
+    streamListen,
+    eotThreshold: streamListen ? resolveEotThreshold() : undefined,
+  };
 }
 
 function resolveTtsRate(): number | string {
@@ -316,17 +358,44 @@ function chunkForTts(text: string, maxChars = 900): string[] {
   return chunks;
 }
 
-type MicSession = {
+type ChildProc = ReturnType<typeof import("node:child_process").spawn>;
+
+type WavMicSession = {
+  mode: "wav";
   id: string;
   wavPath: string;
   stopPath: string;
   logPath: string;
   errPath: string;
-  child: ReturnType<typeof import("node:child_process").spawn>;
+  child: ChildProc;
   startedAt: string;
   stdout: string;
   stderr: string;
+  autoEnd: false;
 };
+
+type StreamMicSession = {
+  mode: "flux-stream";
+  id: string;
+  startedAt: string;
+  child: ChildProc;
+  flux: FluxSttSession;
+  lastText: string;
+  committed: { text: string; engine: string; confidence?: number } | null;
+  stopping: boolean;
+  stdout: string;
+  stderr: string;
+  autoEnd: boolean;
+  maxTimer?: ReturnType<typeof setTimeout>;
+  onUtteranceEnd?: (result: {
+    text: string;
+    engine: string;
+    confidence?: number;
+  }) => void;
+  onPartial?: (text: string) => void;
+};
+
+type MicSession = WavMicSession | StreamMicSession;
 
 let micSession: MicSession | null = null;
 
@@ -339,7 +408,7 @@ function readTextIfExists(filePath: string): string {
   }
 }
 
-function micFailureDetail(session: MicSession, fallback: string): string {
+function micFailureDetail(session: WavMicSession, fallback: string): string {
   const errFile = readTextIfExists(session.errPath);
   const logTail = readTextIfExists(session.logPath).split(/\r?\n/).slice(-8).join(" | ");
   const stderr = session.stderr.trim().slice(-500);
@@ -359,18 +428,40 @@ export function getMicSessionStatus(): {
   listening: boolean;
   id?: string;
   startedAt?: string;
+  mode?: "wav" | "flux-stream";
+  autoEnd?: boolean;
+  committed?: boolean;
 } {
   if (!micSession) return { listening: false };
   return {
     listening: true,
     id: micSession.id,
     startedAt: micSession.startedAt,
+    mode: micSession.mode,
+    autoEnd: micSession.autoEnd,
+    committed: micSession.mode === "flux-stream" ? Boolean(micSession.committed) : false,
   };
 }
 
-export async function startMicSession(options?: {
+export type StartMicResult = {
+  id: string;
+  startedAt: string;
+  autoEnd: boolean;
+  mode: "wav" | "flux-stream";
+};
+
+export type StartMicOptions = {
   maxSeconds?: number;
-}): Promise<{ id: string; startedAt: string }> {
+  autoEnd?: boolean;
+  onPartial?: (text: string) => void;
+  onUtteranceEnd?: (result: {
+    text: string;
+    engine: string;
+    confidence?: number;
+  }) => void;
+};
+
+export async function startMicSession(options?: StartMicOptions): Promise<StartMicResult> {
   if (process.platform !== "win32") {
     throw new Error("Push-to-talk mic recording is Windows-only for now");
   }
@@ -378,6 +469,19 @@ export async function startMicSession(options?: {
     throw new Error("Already listening — stop the current session first");
   }
 
+  const wantAutoEnd = options?.autoEnd !== false && isVadEnabled();
+  if (wantAutoEnd && canStreamFluxStt()) {
+    try {
+      return await startFluxMicSession(options);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[voice-cursor] Flux listen unavailable, falling back to WAV PTT: ${message}`);
+    }
+  }
+  return startWavMicSession(options);
+}
+
+async function startWavMicSession(options?: StartMicOptions): Promise<StartMicResult> {
   const script = resolveRepoScript("record-until-stop-windows.ps1");
   if (!script) throw new Error("scripts/record-until-stop-windows.ps1 not found");
 
@@ -412,7 +516,8 @@ export async function startMicSession(options?: {
     },
   );
 
-  const session: MicSession = {
+  const session: WavMicSession = {
+    mode: "wav",
     id,
     wavPath,
     stopPath,
@@ -422,6 +527,7 @@ export async function startMicSession(options?: {
     startedAt,
     stdout: "",
     stderr: "",
+    autoEnd: false,
   };
   micSession = session;
 
@@ -450,8 +556,232 @@ export async function startMicSession(options?: {
     );
   }
 
-  console.log(`[voice-cursor] mic listening id=${id} wav=${wavPath}`);
-  return { id, startedAt };
+  console.log(`[voice-cursor] mic listening id=${id} wav=${wavPath} mode=wav`);
+  return { id, startedAt, autoEnd: false, mode: "wav" };
+}
+
+async function startFluxMicSession(options?: StartMicOptions): Promise<StartMicResult> {
+  const key = deepgramKey();
+  if (!key) throw new Error("DEEPGRAM_API_KEY not set");
+
+  const script = resolveRepoScript("record-pcm-host.ps1");
+  if (!script) throw new Error("scripts/record-pcm-host.ps1 not found");
+
+  const id = `mic-${Date.now()}`;
+  const startedAt = new Date().toISOString();
+  const maxSeconds = options?.maxSeconds ?? 120;
+
+  const session: StreamMicSession = {
+    mode: "flux-stream",
+    id,
+    startedAt,
+    child: null as unknown as ChildProc,
+    flux: null as unknown as FluxSttSession,
+    lastText: "",
+    committed: null,
+    stopping: false,
+    stdout: "",
+    stderr: "",
+    autoEnd: true,
+    onUtteranceEnd: options?.onUtteranceEnd,
+    onPartial: options?.onPartial,
+  };
+
+  const commitTurn = (text: string, confidence?: number) => {
+    const cleaned = text.replace(/\s+/g, " ").trim();
+    if (session.committed || session.stopping) {
+      if (!session.committed && cleaned) {
+        session.committed = { text: cleaned, engine: "deepgram-flux", confidence };
+      }
+      return;
+    }
+    if (cleaned.length < 2) return;
+    session.committed = { text: cleaned, engine: "deepgram-flux", confidence };
+    console.log(
+      `[voice-cursor] flux-stt EndOfTurn id=${id} chars=${cleaned.length} text=${cleaned.slice(0, 120)}`,
+    );
+    try {
+      session.child.stdin?.write("stop\n");
+    } catch {
+      // ignore
+    }
+    void session.flux.close();
+    session.onUtteranceEnd?.(session.committed);
+  };
+
+  const flux = new FluxSttSession({
+    apiKey: key,
+    model: process.env.VOICE_CURSOR_FLUX_STT_MODEL || DEFAULT_FLUX_STT_MODEL,
+    eotThreshold: resolveEotThreshold(),
+    eotTimeoutMs: resolveEotTimeoutMs(),
+    handlers: {
+      onTurn: (msg) => {
+        const current = micSession;
+        if (!current || current.mode !== "flux-stream" || current.id !== id) return;
+        if (typeof msg.transcript === "string" && msg.transcript.trim()) {
+          current.lastText = msg.transcript.replace(/\s+/g, " ").trim();
+          if (msg.event === "Update" || msg.event === "StartOfTurn") {
+            current.onPartial?.(current.lastText);
+          }
+        }
+        if (shouldCommitFluxTurn(msg)) {
+          commitTurn(msg.transcript ?? current.lastText, msg.end_of_turn_confidence);
+        }
+      },
+      onError: (error) => {
+        const current = micSession;
+        if (!current || current.mode !== "flux-stream" || current.id !== id) return;
+        console.warn(`[voice-cursor] flux-stt error id=${id}: ${error.message}`);
+      },
+    },
+  });
+  session.flux = flux;
+  try {
+    await flux.connect();
+  } catch (error) {
+    void flux.close();
+    throw error;
+  }
+
+  const { spawn } = await import("node:child_process");
+  const child = spawn(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-SampleRate",
+      String(FLUX_STT_SAMPLE_RATE),
+      "-Channels",
+      "1",
+      "-Bits",
+      "16",
+    ],
+    {
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  session.child = child;
+
+  let readyResolve: () => void = () => undefined;
+  let readyReject: (error: Error) => void = () => undefined;
+  const ready = new Promise<void>((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  let readySettled = false;
+  const markReady = () => {
+    if (readySettled) return;
+    readySettled = true;
+    readyResolve();
+  };
+  const failReady = (error: Error) => {
+    if (readySettled) return;
+    readySettled = true;
+    readyReject(error);
+  };
+
+  let lineBuf = "";
+  const onLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    if (trimmed === "ready") {
+      markReady();
+      return;
+    }
+    if (trimmed.startsWith("pcm ")) {
+      const b64 = trimmed.slice(4).trim();
+      if (!b64 || session.committed || session.stopping) return;
+      try {
+        const pcm = Buffer.from(b64, "base64");
+        session.flux.sendPcm(pcm);
+      } catch (error) {
+        console.warn(
+          `[voice-cursor] flux-stt pcm decode failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return;
+    }
+    if (/^err\b/i.test(trimmed)) {
+      failReady(new Error(trimmed));
+      return;
+    }
+    if (/^ok\b/i.test(trimmed)) {
+      session.stdout += `${trimmed}\n`;
+    }
+  };
+
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    lineBuf += String(chunk);
+    let nl = lineBuf.indexOf("\n");
+    while (nl >= 0) {
+      const line = lineBuf.slice(0, nl);
+      lineBuf = lineBuf.slice(nl + 1);
+      onLine(line.replace(/\r$/, ""));
+      nl = lineBuf.indexOf("\n");
+    }
+  });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    session.stderr += String(chunk);
+    console.warn(`[voice-cursor] pcm recorder stderr: ${String(chunk).trim()}`);
+  });
+  child.on("exit", (code) => {
+    console.log(
+      `[voice-cursor] pcm recorder exit code=${code} id=${id} stderr=${session.stderr.trim().slice(0, 200)}`,
+    );
+    if (!readySettled) {
+      failReady(
+        new Error(
+          `PCM recorder exited before ready (code=${code}) ${session.stderr.trim().slice(0, 200)}`,
+        ),
+      );
+    }
+  });
+
+  const readyTimeout = setTimeout(() => {
+    failReady(new Error("PCM recorder ready timeout"));
+  }, 8000);
+
+  try {
+    await ready;
+  } catch (error) {
+    clearTimeout(readyTimeout);
+    try {
+      child.kill();
+    } catch {
+      // ignore
+    }
+    void flux.close();
+    throw error;
+  }
+  clearTimeout(readyTimeout);
+
+  micSession = session;
+  session.maxTimer = setTimeout(() => {
+    const current = micSession;
+    if (!current || current.mode !== "flux-stream" || current.id !== id) return;
+    if (current.committed || current.stopping) return;
+    console.warn(`[voice-cursor] flux-stt maxSeconds=${maxSeconds} id=${id}`);
+    if (current.lastText.trim().length >= 2) {
+      commitTurn(current.lastText);
+    } else {
+      try {
+        child.stdin?.write("stop\n");
+      } catch {
+        // ignore
+      }
+      void current.flux.close();
+    }
+  }, maxSeconds * 1000);
+  session.maxTimer.unref?.();
+
+  console.log(
+    `[voice-cursor] mic listening id=${id} mode=flux-stream eot=${resolveEotThreshold()} timeoutMs=${resolveEotTimeoutMs()}`,
+  );
+  return { id, startedAt, autoEnd: true, mode: "flux-stream" };
 }
 
 async function transcribeWavOpenAI(wavPath: string): Promise<string> {
@@ -613,8 +943,91 @@ export async function stopMicSessionAndTranscribe(): Promise<{
   if (!micSession) {
     throw new Error("Not listening — start listening first");
   }
+  if (micSession.mode === "flux-stream") {
+    return stopFluxMicSession(micSession);
+  }
+  return stopWavMicSession(micSession);
+}
 
-  const session = micSession;
+async function waitChildExit(child: ChildProc, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null) return;
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(() => resolve(), timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+}
+
+async function stopFluxMicSession(session: StreamMicSession): Promise<{
+  text: string;
+  engine: string;
+  id: string;
+  durationMs: number;
+}> {
+  const started = Date.parse(session.startedAt);
+  session.stopping = true;
+  if (session.maxTimer) {
+    clearTimeout(session.maxTimer);
+    session.maxTimer = undefined;
+  }
+  console.log(
+    `[voice-cursor] flux-stt stop id=${session.id} committed=${Boolean(session.committed)} lastChars=${session.lastText.length}`,
+  );
+  try {
+    session.child.stdin?.write("stop\n");
+  } catch {
+    // ignore
+  }
+
+  if (!session.committed) {
+    const waitMs = 1500;
+    const deadline = Date.now() + waitMs;
+    void session.flux.close();
+    while (!session.committed && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (!session.committed && session.lastText.trim().length >= 2) {
+      session.committed = {
+        text: session.lastText.trim(),
+        engine: "deepgram-flux",
+      };
+    }
+  } else {
+    void session.flux.close();
+  }
+
+  await waitChildExit(session.child, 4000);
+  if (session.child.exitCode === null) {
+    try {
+      session.child.kill();
+    } catch {
+      // ignore
+    }
+  }
+
+  if (micSession?.id === session.id) micSession = null;
+
+  const text = session.committed?.text ?? "";
+  const engine = session.committed?.engine ?? "deepgram-flux";
+  console.log(
+    `[voice-cursor] flux-stt stop done id=${session.id} chars=${text.length} engine=${engine}`,
+  );
+  return {
+    text,
+    engine,
+    id: session.id,
+    durationMs: Date.now() - started,
+  };
+}
+
+async function stopWavMicSession(session: WavMicSession): Promise<{
+  text: string;
+  engine: string;
+  id: string;
+  durationMs: number;
+}> {
   const started = Date.parse(session.startedAt);
   const alreadyExited = session.child.exitCode !== null;
   console.log(
@@ -626,22 +1039,7 @@ export async function stopMicSessionAndTranscribe(): Promise<{
     console.warn("[voice-cursor] could not write stop file", error);
   }
 
-  await new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
-      console.warn("[voice-cursor] mic recorder exit wait timed out; killing");
-      resolve();
-    }, 12_000);
-    if (session.child.exitCode !== null) {
-      clearTimeout(timeout);
-      resolve();
-      return;
-    }
-    session.child.once("exit", (code) => {
-      console.log(`[voice-cursor] mic recorder exited code=${code}`);
-      clearTimeout(timeout);
-      resolve();
-    });
-  });
+  await waitChildExit(session.child, 12_000);
 
   if (session.child.exitCode === null) {
     try {
@@ -652,7 +1050,7 @@ export async function stopMicSessionAndTranscribe(): Promise<{
     await new Promise((r) => setTimeout(r, 400));
   }
 
-  micSession = null;
+  if (micSession?.id === session.id) micSession = null;
 
   // Poll briefly for WAV flush (MCI save can lag a beat after process exit).
   for (let i = 0; i < 15; i++) {
@@ -707,6 +1105,26 @@ export async function stopMicSessionAndTranscribe(): Promise<{
 export async function cancelMicSession(): Promise<void> {
   if (!micSession) return;
   const session = micSession;
+  micSession = null;
+  if (session.mode === "flux-stream") {
+    session.stopping = true;
+    if (session.maxTimer) {
+      clearTimeout(session.maxTimer);
+      session.maxTimer = undefined;
+    }
+    try {
+      session.child.stdin?.write("stop\n");
+    } catch {
+      // ignore
+    }
+    try {
+      session.child.kill();
+    } catch {
+      // ignore
+    }
+    void session.flux.close();
+    return;
+  }
   try {
     fs.writeFileSync(session.stopPath, "stop\n", "utf8");
   } catch {
@@ -717,7 +1135,6 @@ export async function cancelMicSession(): Promise<void> {
   } catch {
     // ignore
   }
-  micSession = null;
   try {
     fs.rmSync(path.dirname(session.wavPath), { recursive: true, force: true });
   } catch {

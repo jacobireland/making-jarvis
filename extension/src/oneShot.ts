@@ -9,28 +9,38 @@ export async function startPushToTalk(options: {
   serviceBase: string;
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
-}): Promise<boolean> {
+  autoEnd?: boolean;
+}): Promise<{ ok: boolean; autoEnd: boolean; mode?: string }> {
   const base = options.serviceBase.replace(/\/$/, "");
-  options.setStatus("listening", "push-to-talk");
+  const autoEnd = options.autoEnd !== false;
+  options.setStatus("listening", autoEnd ? "pause to send" : "push-to-talk");
   options.log("[ptt] starting mic");
   try {
     const res = await fetch(`${base}/stt/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ maxSeconds: 120 }),
+      body: JSON.stringify({ maxSeconds: 120, autoEnd }),
     });
-    const body = (await res.json()) as { ok?: boolean; error?: string; id?: string };
+    const body = (await res.json()) as {
+      ok?: boolean;
+      error?: string;
+      id?: string;
+      autoEnd?: boolean;
+      mode?: string;
+    };
     if (!res.ok || !body.ok) {
       throw new Error(body.error ?? `STT start HTTP ${res.status}`);
     }
-    options.log(`[ptt] listening id=${body.id}`);
-    // Do not use a vanishing toast for Stop — status bar + sticky progress own that.
-    return true;
+    const resolvedAutoEnd = body.autoEnd === true;
+    options.log(
+      `[ptt] listening id=${body.id} mode=${body.mode ?? "?"} autoEnd=${resolvedAutoEnd}`,
+    );
+    return { ok: true, autoEnd: resolvedAutoEnd, mode: body.mode };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     options.setStatus("error", message);
     vscode.window.showErrorMessage(`Voice Cursor failed to start listening: ${message}`);
-    return false;
+    return { ok: false, autoEnd: false };
   }
 }
 
@@ -231,22 +241,27 @@ export async function runOneShotTalk(options: {
   submitChord?: SubmitChord;
   confirmTranscript?: boolean;
   quietUi?: boolean;
+  autoEnd?: boolean;
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
   /** Called after mic starts so the extension can point the status bar at Stop. */
-  onListening?: () => void;
+  onListening?: (info: { autoEnd: boolean; mode?: string }) => void;
   onInjected?: (openedWith?: string) => void;
 }): Promise<void> {
   const started = await startPushToTalk({
     serviceBase: options.serviceBase,
     log: options.log,
     setStatus: options.setStatus,
+    autoEnd: options.autoEnd,
   });
-  if (!started) return;
+  if (!started.ok) return;
 
-  options.onListening?.();
+  options.onListening?.({ autoEnd: started.autoEnd, mode: started.mode });
 
   const action = await showStickyListeningUi({
+    message: started.autoEnd
+      ? "Pause when done — or click the status-bar mic to send now"
+      : "Click the status-bar mic (“listening — click to send”) when done",
     onCancel: async () => {
       await fetch(`${options.serviceBase.replace(/\/$/, "")}/stt/cancel`, {
         method: "POST",

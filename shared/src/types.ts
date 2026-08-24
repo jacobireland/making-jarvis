@@ -33,6 +33,15 @@ export type UtteranceEvent = {
   receivedAt: string;
 };
 
+/** Deepgram Flux (or fallback) detected end-of-utterance while armed. */
+export type UtteranceEndEvent = {
+  type: "utterance_end";
+  text: string;
+  engine?: string;
+  confidence?: number;
+  at: string;
+};
+
 export type StateEvent = {
   type: "state";
   state: VoiceCursorState;
@@ -68,5 +77,6 @@ export type VoiceCursorEvent =
   | AgentResponseEvent
   | AgentThoughtEvent
   | UtteranceEvent
+  | UtteranceEndEvent
   | StateEvent
   | TtsDoneEvent;

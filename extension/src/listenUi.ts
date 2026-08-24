@@ -18,6 +18,7 @@ export function signalListenEnd(action: ListenEnd): void {
  */
 export async function showStickyListeningUi(options?: {
   onCancel?: () => Promise<void> | void;
+  message?: string;
 }): Promise<ListenEnd> {
   if (endListen) {
     // Previous UI still open — end it as cancel so we don't leak waiters.
@@ -32,7 +33,9 @@ export async function showStickyListeningUi(options?: {
     },
     async (progress, token) => {
       progress.report({
-        message: "Click the status-bar mic (“listening — click to send”) when done",
+        message:
+          options?.message ??
+          "Click the status-bar mic (“listening — click to send”) when done",
       });
 
       return await new Promise<ListenEnd>((resolve) => {

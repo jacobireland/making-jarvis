@@ -1,7 +1,7 @@
 # Deepgram setup (STT + TTS)
 
 One Deepgram key can power both:
-- **STT:** Nova (`nova-3`) on your push-to-talk WAV
+- **STT:** Flux listen (`flux-general-en` on `/v2/listen`) for pause-to-send, with Nova (`nova-3`) on WAV as fallback
 - **TTS:** Flux (`flux-marcelo-en` by default) via **WebSocket streaming** `/v2/speak` (REST batch remains the fallback)
 
 Streaming vs REST is the same Deepgram usage billing for the same spoken text — there is no separate WebSocket fee. Streaming mainly cuts **time-to-first-audio** (batch REST waits for a full MP3).
@@ -36,7 +36,15 @@ Flux streaming connects to:
 REST fallback (Aura, or if WS fails):
 `https://api.deepgram.com/v2/speak?model=flux-marcelo-en&speed=1.1`
 
-With `auto`, Deepgram is preferred when the key is present. OpenAI Whisper and Windows STT remain **fallbacks** (not the primary path). Edge/SAPI remain TTS fallbacks. See [openai-whisper-setup.md](openai-whisper-setup.md) if you need the Whisper fallback.
+With `auto`, Deepgram is preferred when the key is present. Live listen uses Flux `/v2/listen` (`EndOfTurn` auto-sends). OpenAI Whisper and Windows STT remain **fallbacks** for the WAV path (not the primary path). Edge/SAPI remain TTS fallbacks. See [openai-whisper-setup.md](openai-whisper-setup.md) if you need the Whisper fallback.
+
+Pause-to-send tuning (optional):
+
+```env
+# VOICE_CURSOR_EOT_THRESHOLD=0.7
+# VOICE_CURSOR_EOT_TIMEOUT_MS=7000
+# VOICE_CURSOR_VAD=0   # force click-to-send WAV PTT
+```
 
 ## 3. Restart service
 ```powershell
@@ -47,7 +55,7 @@ npm run service
 
 Health check should show:
 ```json
-"stt": { "resolved": "deepgram", "hasDeepgram": true }
+"stt": { "resolved": "deepgram", "hasDeepgram": true, "vad": true, "streamListen": true }
 "tts": { "resolved": "deepgram", "voice": "flux-marcelo-en", "stream": true, "hasDeepgram": true }
 ```
 

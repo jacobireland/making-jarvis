@@ -2,7 +2,7 @@
   "name": "voice-cursor",
   "displayName": "Voice Cursor",
   "description": "Voice interface to the existing Cursor Agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "making-jarvis",
   "private": true,
   "engines": {
@@ -87,6 +87,11 @@
           "type": "boolean",
           "default": true,
           "description": "When true, skip routine success toasts during push-to-talk (errors and the sticky listening UI still show)"
+        },
+        "voiceCursor.autoEndUtterance": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, auto-send when Deepgram Flux detects end of utterance (a pause). Click Stop & Send still works. Disable for classic click-to-send push-to-talk."
         },
         "voiceCursor.submitChord": {
           "type": "string",

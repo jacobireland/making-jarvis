@@ -28,6 +28,8 @@ let oneShotRunning = false;
 let deferStopToCaller = false;
 /** After first same-thread inject in this session, keep using current chat. */
 let sessionOpenedAgentChat = false;
+/** True while a listen session is armed (Start succeeded, not yet send/cancel). */
+let listenArmed = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionPath = context.extensionPath;
@@ -237,19 +239,20 @@ export function activate(context: vscode.ExtensionContext): void {
           submitChord: getSubmitChord(),
           confirmTranscript: isConfirmTranscriptEnabled(),
           quietUi: isQuietUiEnabled(),
+          autoEnd: isAutoEndEnabled(),
           log: (msg) => output.appendLine(msg),
           setStatus,
-          onListening: () => {
+          onListening: (info) => {
+            listenArmed = true;
             deferStopToCaller = true;
-            status.command = "voiceCursor.stopListeningAndSend";
-            status.tooltip = "Click to stop listening and send";
-            status.text = "$(mic) Voice Cursor: listening (click to send)";
+            applyListeningStatusBar(info.autoEnd);
           },
           onInjected: (openedWith) => noteChatOpened(openedWith),
         });
-      } finally {
+        } finally {
         deferStopToCaller = false;
         oneShotRunning = false;
+        listenArmed = false;
         resetStatusBarIdle();
       }
     }),
@@ -265,20 +268,24 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       output.show(true);
-      const ok = await startPushToTalk({
+      const started = await startPushToTalk({
         serviceBase: serviceBase(),
         log: (msg) => output.appendLine(msg),
         setStatus,
+        autoEnd: isAutoEndEnabled(),
       });
-      if (!ok) return;
+      if (!started.ok) return;
 
-      status.command = "voiceCursor.stopListeningAndSend";
-      status.tooltip = "Click to stop listening and send";
-      status.text = "$(mic) Voice Cursor: listening (click to send)";
+      listenArmed = true;
+      applyListeningStatusBar(started.autoEnd);
 
       // Sticky progress — does not vanish like a toast.
       void showStickyListeningUi({
+        message: started.autoEnd
+          ? "Pause when done — or click the status-bar mic to send now"
+          : "Click the status-bar mic (“listening — click to send”) when done",
         onCancel: async () => {
+          listenArmed = false;
           try {
             await postJson("/stt/cancel", {});
           } catch {
@@ -290,6 +297,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }).then((action) => {
         if (action === "send") {
           // stopListeningAndSend is already running from the status-bar click
+          // or from utterance_end auto-send.
           return;
         }
       });
@@ -299,6 +307,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.stopListeningAndSend", async () => {
       // Always dismiss sticky listening UI first.
+      listenArmed = false;
       signalListenEnd("send");
 
       if (deferStopToCaller) {
@@ -343,6 +352,7 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch {
         // ignore
       }
+      listenArmed = false;
       signalListenEnd("cancel");
       deferStopToCaller = false;
       oneShotRunning = false;
@@ -358,14 +368,18 @@ export function activate(context: vscode.ExtensionContext): void {
   void warmSendEnterHost(extensionPath).then(() => {
     output.appendLine("[inject] send-enter host warmed");
   });
-  output.appendLine("Voice Cursor activated (push-to-talk).");
+  output.appendLine("Voice Cursor activated (push-to-talk + pause-to-send).");
   output.appendLine(
     isAutoStartEnabled()
       ? "1) Voice service auto-starts if needed (or keep npm run service running)"
       : "1) Start service: npm run service",
   );
   output.appendLine("2) Start Listening or One-Shot Talk");
-  output.appendLine("3) While listening: click status-bar mic to Stop & Send");
+  output.appendLine(
+    isAutoEndEnabled()
+      ? "3) Speak, then pause — Flux auto-sends. Click the status-bar mic to send now, or Cancel to abort."
+      : "3) While listening: click status-bar mic to Stop & Send",
+  );
   output.appendLine("   (sticky notification also stays up — Cancel there to abort)");
   output.appendLine(
     `Chat mode: ${
@@ -447,6 +461,7 @@ async function cancelInFlightTurnIfRequested(message: string): Promise<boolean> 
   }
   signalListenEnd("cancel");
   oneShotRunning = false;
+  listenArmed = false;
   deferStopToCaller = false;
   return true;
 }
@@ -467,6 +482,23 @@ function isQuietUiEnabled(): boolean {
   return vscode.workspace
     .getConfiguration("voiceCursor")
     .get<boolean>("quietUi", true);
+}
+
+function isAutoEndEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("voiceCursor")
+    .get<boolean>("autoEndUtterance", true);
+}
+
+function applyListeningStatusBar(autoEnd: boolean): void {
+  status.command = "voiceCursor.stopListeningAndSend";
+  if (autoEnd) {
+    status.tooltip = "Pause to send, or click to send now";
+    status.text = "$(mic) Voice Cursor: listening (pause to send)";
+  } else {
+    status.tooltip = "Click to stop listening and send";
+    status.text = "$(mic) Voice Cursor: listening (click to send)";
+  }
 }
 
 /**
@@ -579,6 +611,18 @@ function connectSocket(): void {
 }
 
 function handleEvent(event: VoiceCursorEvent): void {
+  if (event.type === "utterance_end") {
+    output.appendLine(
+      `[utterance_end] engine=${event.engine ?? "?"} chars=${event.text.length} ${event.text.slice(0, 160)}`,
+    );
+    if (!listenArmed) return;
+    listenArmed = false;
+    signalListenEnd("send");
+    if (!deferStopToCaller && !oneShotRunning) {
+      void vscode.commands.executeCommand("voiceCursor.stopListeningAndSend");
+    }
+    return;
+  }
   if (event.type === "agent_thought") {
     output.appendLine(
       `[agent_thought] spokenChars=${event.spokenText.length} rawChars=${event.text.length} durationMs=${event.durationMs ?? "n/a"} ${event.spokenText.slice(0, 160)}`,
