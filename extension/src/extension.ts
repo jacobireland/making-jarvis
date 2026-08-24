@@ -231,8 +231,18 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.startListening", async () => {
       if (oneShotRunning) {
-        vscode.window.showWarningMessage("Voice Cursor: already busy");
-        return;
+        const pick = await vscode.window.showWarningMessage(
+          "Voice Cursor is still finishing the previous turn (waiting on Agent/TTS).",
+          "Cancel & Start Fresh",
+          "Keep Waiting",
+        );
+        if (pick !== "Cancel & Start Fresh") return;
+        try {
+          await postJson("/stt/cancel", {});
+        } catch {
+          // ignore
+        }
+        oneShotRunning = false;
       }
       output.show(true);
       const ok = await startPushToTalk({
@@ -251,7 +261,9 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.stopListeningAndSend", async () => {
       if (oneShotRunning) {
-        vscode.window.showWarningMessage("Voice Cursor: already sending");
+        vscode.window.showWarningMessage(
+          "Voice Cursor: already sending this turn. Use Cancel Listening to abort.",
+        );
         return;
       }
       oneShotRunning = true;
