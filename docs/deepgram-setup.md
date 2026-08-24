@@ -61,7 +61,7 @@ Health check should show:
 "tts": { "resolved": "deepgram", "voice": "flux-marcelo-en", "stream": true, "hasDeepgram": true }
 ```
 
-Service logs for a spoken reply should include `deepgram-tts-ws pcm-stream` and a low `firstAudioMs` (waveOut starts after ~100ms preroll — gapless, not choppy 120ms MCI clips or full-sentence waits).
+Service logs for a spoken reply should include `deepgram-tts-ws pcm-stream` and a low `firstAudioMs` (waveOut starts after ~100ms preroll — Flux `firstByteMs` is time-to-first-PCM). Voice Cursor cannot start speaking until Cursor's `afterAgentResponse` hook fires, which is when the **full** reply is done — the chat UI may already have been streaming that text.
 
 ## Voices / speed / expressivity
 - Flux models use `/v2/speak` (`flux-…`) — **WebSocket streaming by default**

@@ -367,12 +367,16 @@ while ($true) {
       $bytes = [Convert]::FromBase64String($b64)
       $already = $player.StartedPlay
       $player.Write($bytes)
-      # Poll briefly so "first" can fire soon after preroll is met.
+      # Do not Sleep while waiting for preroll — that blocks stdin and stalls
+      # later PCM chunks (~150ms per frame, which stacked to ~550ms first-audio).
+      # Once preroll is queued, yield briefly so the player thread can waveOutWrite.
       if (-not $already) {
-        for ($i = 0; $i -lt 30 -and -not $player.StartedPlay; $i++) {
-          Start-Sleep -Milliseconds 5
+        if (-not $player.StartedPlay -and $player.BytesQueued -ge 4800) {
+          for ($i = 0; $i -lt 20 -and -not $player.StartedPlay; $i++) {
+            Start-Sleep -Milliseconds 1
+          }
         }
-        if ($player.StartedPlay -and -not $already) {
+        if ($player.StartedPlay) {
           Write-OkLine ("first ms=" + $player.FirstMs)
         }
       }
