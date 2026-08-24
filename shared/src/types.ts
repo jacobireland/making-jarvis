@@ -17,6 +17,16 @@ export type AgentResponseEvent = {
   raw?: unknown;
 };
 
+/** A completed Agent thinking/reasoning block (afterAgentThought hook). */
+export type AgentThoughtEvent = {
+  type: "agent_thought";
+  text: string;
+  spokenText: string;
+  durationMs?: number;
+  receivedAt: string;
+  raw?: unknown;
+};
+
 export type UtteranceEvent = {
   type: "utterance";
   text: string;
@@ -40,6 +50,8 @@ export type TtsDoneEvent = {
   /** Ms for full synth+playback wall time. */
   totalMs?: number;
   error?: string;
+  /** What triggered this speak (final reply vs thinking block). */
+  source?: string;
   at: string;
 };
 
@@ -54,6 +66,7 @@ export type HealthResponse = {
 
 export type VoiceCursorEvent =
   | AgentResponseEvent
+  | AgentThoughtEvent
   | UtteranceEvent
   | StateEvent
   | TtsDoneEvent;

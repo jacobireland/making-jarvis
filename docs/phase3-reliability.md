@@ -3,10 +3,11 @@
 ## What's new
 1. **Auto-start voice service** — on activate (and on reconnect), the extension starts `voice-service/dist/index.js` if `/health` is down (`voiceCursor.autoStartService`, default on).
 2. **Same-thread chat** — `voiceCursor.oneShotNewChat` defaults to **false**: first turn this session opens one Agent chat, later turns stay in that thread. Set it **true** for a new chat every turn.
+3. **Speak thinking blocks** — `afterAgentThought` speaks each completed Agent thought (when armed by a voice turn), then the final `afterAgentResponse`. Disable with `VOICE_CURSOR_SPEAK_THOUGHTS=0`.
 
 ## Flow (unchanged)
 1. **Start Listening** → speak → **Stop Listening & Send**
-2. Transcript → inject into Agent → spoken reply
+2. Transcript → inject into Agent → spoken thoughts (as blocks complete) → spoken final reply
 
 ## Settings
 | Setting | Default | Meaning |
@@ -17,7 +18,13 @@
 | `voiceCursor.quietUi` | `true` | Skip routine success toasts during push-to-talk |
 | `voiceCursor.serviceUrl` | `http://127.0.0.1:4738` | Service base URL |
 
+## Env (service)
+| Variable | Default | Meaning |
+|---|---|---|
+| `VOICE_CURSOR_SPEAK_THOUGHTS` | `true` | Speak `afterAgentThought` blocks during an armed voice turn |
+
 ## Notes
 - Auto-start needs a prior `npm run build` so `voice-service/dist/index.js` exists.
 - You can still run `npm run service` yourself; the extension will reuse it and will not double-start.
 - If the extension started the service, it stops that managed process on deactivate.
+- Thought and final reply TTS are queued so neither drops; PTT waits only for the final-reply `tts_done`.

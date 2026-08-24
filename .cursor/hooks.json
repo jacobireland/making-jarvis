@@ -7,6 +7,12 @@
         "timeout": 5000
       }
     ],
+    "afterAgentThought": [
+      {
+        "command": "node .cursor/hooks/relay.js after-agent-thought",
+        "timeout": 5000
+      }
+    ],
     "afterAgentResponse": [
       {
         "command": "node .cursor/hooks/relay.js after-agent-response",

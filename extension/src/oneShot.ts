@@ -157,9 +157,8 @@ export async function stopPushToTalkAndSend(options: {
   log(`[ptt] captured spoken=${captured.spokenText}`);
   setStatus("speaking", captured.spokenText.slice(0, 60));
 
-  // Service auto-starts TTS on the agent hook (armed by /utterance).
-  // We just wait for tts_done — that removes the extension round-trip from
-  // the critical path before first audio.
+  // Service auto-starts TTS on thought + final reply hooks (armed by /utterance).
+  // Wait only for final-reply tts_done — thought speaks must not end the PTT turn.
   const ttsWaitStarted = Date.now();
   let tts = await waitForTtsDoneFast(base, {
     sinceIso,

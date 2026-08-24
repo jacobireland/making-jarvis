@@ -588,6 +588,12 @@ function connectSocket(): void {
 }
 
 function handleEvent(event: VoiceCursorEvent): void {
+  if (event.type === "agent_thought") {
+    output.appendLine(
+      `[agent_thought] spokenChars=${event.spokenText.length} rawChars=${event.text.length} durationMs=${event.durationMs ?? "n/a"} ${event.spokenText.slice(0, 160)}`,
+    );
+    return;
+  }
   if (event.type === "agent_response") {
     lastAgentResponse = event;
     notifyAgentResponse(event);
@@ -606,7 +612,7 @@ function handleEvent(event: VoiceCursorEvent): void {
   if (event.type === "tts_done") {
     notifyTtsDone(event);
     output.appendLine(
-      `[tts_done] ok=${event.ok} engine=${event.engine ?? "?"} firstAudioMs=${event.firstAudioMs ?? "n/a"} totalMs=${event.totalMs ?? "n/a"}`,
+      `[tts_done] ok=${event.ok} source=${event.source ?? "?"} engine=${event.engine ?? "?"} firstAudioMs=${event.firstAudioMs ?? "n/a"} totalMs=${event.totalMs ?? "n/a"}`,
     );
     return;
   }

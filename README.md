@@ -8,7 +8,7 @@ Voice interface to the **existing Cursor Agent**. Cursor remains responsible for
 |---|---|
 | `extension/` | Push-to-talk, auto-start service, inject into Agent (same-thread by default) |
 | `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Deepgram STT/TTS (Flux WebSocket streaming) |
-| `.cursor/hooks/` | `afterAgentResponse` → service |
+| `.cursor/hooks/` | `afterAgentThought` + `afterAgentResponse` → service (spoken thoughts then final reply) |
 | `scripts/` | Windows Enter / PCM play / STT helpers |
 | `shared/` | Event types + `toSpokenText()` |
 

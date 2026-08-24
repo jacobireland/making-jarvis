@@ -19,6 +19,7 @@ const DEBUG_LOG = path.join(os.tmpdir(), "voice-cursor-hooks.log");
 function routeFor(kind) {
   if (kind === "stop") return "/hooks/stop";
   if (kind === "session-start") return "/hooks/session-start";
+  if (kind === "after-agent-thought") return "/hooks/after-agent-thought";
   return "/hooks/after-agent-response";
 }
 

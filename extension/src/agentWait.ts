@@ -7,11 +7,23 @@ type AgentWaiter = {
 
 type TtsWaiter = {
   sinceMs: number;
+  /** If set, only tts_done events whose source is in this list will settle the wait. */
+  sources?: string[];
   resolve: (event: TtsDoneEvent) => void;
 };
 
 const agentWaiters = new Set<AgentWaiter>();
 const ttsWaiters = new Set<TtsWaiter>();
+
+/** Final reply / manual speak — not thinking-block TTS. */
+export const FINAL_TTS_SOURCES = ["after-agent-response", "tts/speak", "speak"] as const;
+
+function matchesTtsSource(event: TtsDoneEvent, sources?: string[]): boolean {
+  if (!sources || sources.length === 0) return true;
+  // Legacy events without source: treat as final (manual /tts/speak before source tagging).
+  if (!event.source) return sources.includes("tts/speak") || sources.includes("speak");
+  return sources.includes(event.source);
+}
 
 /**
  * Called from the WS event handler when an agent_response arrives.
@@ -33,10 +45,10 @@ export function notifyAgentResponse(event: AgentResponseEvent): void {
 export function notifyTtsDone(event: TtsDoneEvent): void {
   const at = event.at ? Date.parse(event.at) : Date.now();
   for (const waiter of [...ttsWaiters]) {
-    if (at >= waiter.sinceMs) {
-      ttsWaiters.delete(waiter);
-      waiter.resolve(event);
-    }
+    if (at < waiter.sinceMs) continue;
+    if (!matchesTtsSource(event, waiter.sources)) continue;
+    ttsWaiters.delete(waiter);
+    waiter.resolve(event);
   }
 }
 
@@ -73,6 +85,7 @@ async function fetchLatestAgentResponse(
 async function fetchLatestTtsDone(
   serviceBase: string,
   sinceMs: number,
+  sources?: string[],
 ): Promise<TtsDoneEvent | null> {
   try {
     const res = await fetch(`${serviceBase.replace(/\/$/, "")}/events?limit=40`);
@@ -80,7 +93,9 @@ async function fetchLatestTtsDone(
     for (const event of [...(body.events ?? [])].reverse()) {
       if (event.type !== "tts_done") continue;
       const at = event.at ? Date.parse(event.at) : 0;
-      if (at && at >= sinceMs) return event;
+      if (!at || at < sinceMs) continue;
+      if (!matchesTtsSource(event, sources)) continue;
+      return event;
     }
   } catch {
     // ignore
@@ -148,13 +163,22 @@ export async function waitForAgentResponseFast(
   });
 }
 
-/** Wait for auto-speak (or manual speak) to finish after sinceIso. */
+/**
+ * Wait for TTS to finish after sinceIso.
+ * By default only final-reply sources settle (ignores after-agent-thought).
+ */
 export async function waitForTtsDoneFast(
   serviceBase: string,
-  options: { sinceIso: string; timeoutMs?: number },
+  options: {
+    sinceIso: string;
+    timeoutMs?: number;
+    /** Defaults to final reply / manual speak sources. */
+    sources?: string[];
+  },
 ): Promise<TtsDoneEvent | null> {
   const timeoutMs = options.timeoutMs ?? 180_000;
   const sinceMs = Date.parse(options.sinceIso);
+  const sources = options.sources ?? [...FINAL_TTS_SOURCES];
 
   return await new Promise((resolve) => {
     let settled = false;
@@ -169,12 +193,13 @@ export async function waitForTtsDoneFast(
 
     const waiter: TtsWaiter = {
       sinceMs,
+      sources,
       resolve: (event) => finish(event),
     };
     ttsWaiters.add(waiter);
 
     const checkHttp = async () => {
-      const hit = await fetchLatestTtsDone(serviceBase, sinceMs);
+      const hit = await fetchLatestTtsDone(serviceBase, sinceMs, sources);
       if (hit) finish(hit);
     };
 

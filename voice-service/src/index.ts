@@ -4,6 +4,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   toSpokenText,
   type AgentResponseEvent,
+  type AgentThoughtEvent,
   type HealthResponse,
   type VoiceCursorEvent,
   type VoiceCursorState,
@@ -33,15 +34,26 @@ process.on("unhandledRejection", (reason) => {
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.3.3";
+const VERSION = "0.3.5";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
 const MAX_EVENTS = 200;
 const sockets = new Set<WebSocket>();
 let speechBusy = false;
-/** After /utterance, the next afterAgentResponse should auto-speak. */
+/** After /utterance, speak thoughts + the next afterAgentResponse. */
 let autoSpeakArmed = false;
+/** Cursor sometimes double-fires afterAgentThought for the same block. */
+let lastThoughtDedupeKey = "";
+let lastThoughtDedupeAt = 0;
+
+type SpeakJob = {
+  text: string;
+  source: string;
+  done: (error?: unknown) => void;
+};
+const speakQueue: SpeakJob[] = [];
+
 function pushEvent(event: VoiceCursorEvent): void {
   events.push(event);
   if (events.length > MAX_EVENTS) events.shift();
@@ -61,19 +73,38 @@ function setState(next: VoiceCursorState, detail?: string): void {
   });
 }
 
-async function speakAndAnnounce(text: string, source: string): Promise<void> {
-  if (!text.trim()) return;
-  if (speechBusy) {
-    console.warn(`[voice-cursor] skip speak (${source}): speech busy`);
-    return;
-  }
+function isSpeakThoughtsEnabled(): boolean {
+  const raw = (process.env.VOICE_CURSOR_SPEAK_THOUGHTS ?? "true").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
+function enqueueSpeak(text: string, source: string): Promise<void> {
+  const cleaned = text.trim();
+  if (!cleaned) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    speakQueue.push({
+      text: cleaned,
+      source,
+      done: (error) => (error ? reject(error) : resolve()),
+    });
+    console.log(
+      `[voice-cursor] speak queued source=${source} chars=${cleaned.length} depth=${speakQueue.length}`,
+    );
+    void drainSpeakQueue();
+  });
+}
+
+async function drainSpeakQueue(): Promise<void> {
+  if (speechBusy) return;
+  const job = speakQueue.shift();
+  if (!job) return;
   speechBusy = true;
-  setState("speaking", text.slice(0, 80));
+  setState("speaking", `${job.source}: ${job.text.slice(0, 60)}`);
   const started = Date.now();
   try {
-    const result = await speakText(text);
+    const result = await speakText(job.text);
     console.log(
-      `[voice-cursor] speak done source=${source} engine=${result.engine} firstAudioMs=${result.firstAudioMs ?? "n/a"} totalMs=${result.totalMs ?? Date.now() - started}`,
+      `[voice-cursor] speak done source=${job.source} engine=${result.engine} firstAudioMs=${result.firstAudioMs ?? "n/a"} totalMs=${result.totalMs ?? Date.now() - started}`,
     );
     pushEvent({
       type: "tts_done",
@@ -82,23 +113,32 @@ async function speakAndAnnounce(text: string, source: string): Promise<void> {
       voice: result.voice,
       firstAudioMs: result.firstAudioMs,
       totalMs: result.totalMs ?? Date.now() - started,
+      source: job.source,
       at: new Date().toISOString(),
     });
-    setState("idle", "spoke");
+    setState(speakQueue.length ? "speaking" : "idle", "spoke");
+    job.done();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[voice-cursor] speak failed source=${source}: ${message}`);
+    console.warn(`[voice-cursor] speak failed source=${job.source}: ${message}`);
     pushEvent({
       type: "tts_done",
       ok: false,
       error: message,
       totalMs: Date.now() - started,
+      source: job.source,
       at: new Date().toISOString(),
     });
     setState("error", message);
+    job.done(error);
   } finally {
     speechBusy = false;
+    if (speakQueue.length) void drainSpeakQueue();
   }
+}
+
+async function speakAndAnnounce(text: string, source: string): Promise<void> {
+  await enqueueSpeak(text, source);
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -118,6 +158,11 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
   return JSON.parse(raw);
 }
 
+function maxSpokenChars(): number {
+  const maxSpoken = Number(process.env.VOICE_CURSOR_MAX_SPOKEN_CHARS ?? 2500);
+  return Number.isFinite(maxSpoken) && maxSpoken > 200 ? maxSpoken : 2500;
+}
+
 function asAgentResponse(body: Record<string, unknown>): AgentResponseEvent {
   const text =
     (typeof body.text === "string" && body.text) ||
@@ -125,10 +170,7 @@ function asAgentResponse(body: Record<string, unknown>): AgentResponseEvent {
     (typeof body.content === "string" && body.content) ||
     "";
 
-  const maxSpoken = Number(process.env.VOICE_CURSOR_MAX_SPOKEN_CHARS ?? 2500);
-  const spokenText = toSpokenText(text, {
-    maxChars: Number.isFinite(maxSpoken) && maxSpoken > 200 ? maxSpoken : 2500,
-  });
+  const spokenText = toSpokenText(text, { maxChars: maxSpokenChars() });
 
   return {
     type: "agent_response",
@@ -149,6 +191,36 @@ function asAgentResponse(body: Record<string, unknown>): AgentResponseEvent {
     receivedAt: new Date().toISOString(),
     raw: body,
   };
+}
+
+function asAgentThought(body: Record<string, unknown>): AgentThoughtEvent {
+  const text = typeof body.text === "string" ? body.text : "";
+  const durationMs =
+    typeof body.duration_ms === "number"
+      ? body.duration_ms
+      : typeof body.durationMs === "number"
+        ? body.durationMs
+        : undefined;
+  const spokenText = toSpokenText(text, { maxChars: maxSpokenChars() });
+  return {
+    type: "agent_thought",
+    text,
+    spokenText,
+    durationMs,
+    receivedAt: new Date().toISOString(),
+    raw: body,
+  };
+}
+
+function isDuplicateThought(event: AgentThoughtEvent): boolean {
+  const key = `${event.durationMs ?? 0}:${event.text.length}:${event.text.slice(0, 240)}`;
+  const now = Date.now();
+  if (key === lastThoughtDedupeKey && now - lastThoughtDedupeAt < 4000) {
+    return true;
+  }
+  lastThoughtDedupeKey = key;
+  lastThoughtDedupeAt = now;
+  return false;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -205,6 +277,38 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/hooks/after-agent-thought") {
+      const body = (await readJson(req)) as Record<string, unknown>;
+      const event = asAgentThought(body);
+      if (isDuplicateThought(event)) {
+        console.log(
+          "[voice-cursor] agent_thought duplicate skipped",
+          `chars=${event.text.length}`,
+        );
+        json(res, 200, { ok: true, duplicate: true });
+        return;
+      }
+      pushEvent(event);
+      const shouldSpeak =
+        isSpeakThoughtsEnabled() && autoSpeakArmed && Boolean(event.spokenText.trim());
+      console.log(
+        "[voice-cursor] agent_thought",
+        `rawChars=${event.text.length} spokenChars=${event.spokenText.length}`,
+        `durationMs=${event.durationMs ?? "n/a"}`,
+        `(autoSpeak=${autoSpeakArmed} speakThoughts=${isSpeakThoughtsEnabled()})`,
+        event.spokenText.slice(0, 120),
+      );
+      // Keep autoSpeakArmed — final reply still comes via afterAgentResponse.
+      json(res, 200, { ok: true, spokenText: event.spokenText, autoSpeak: shouldSpeak });
+      if (shouldSpeak) {
+        void enqueueSpeak(event.spokenText, "after-agent-thought").catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`[voice-cursor] thought speak failed: ${message}`);
+        });
+      }
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/hooks/after-agent-response") {
       const body = (await readJson(req)) as Record<string, unknown>;
       const event = asAgentResponse(body);
@@ -215,14 +319,13 @@ const server = http.createServer(async (req, res) => {
         "[voice-cursor] agent_response",
         `rawChars=${event.text.length} spokenChars=${event.spokenText.length}`,
         event.spokenText.slice(0, 120),
-        `(autoSpeak=${shouldAutoSpeak})`,
+        `(autoSpeak=${shouldAutoSpeak} queue=${speakQueue.length})`,
       );
-      // Reply to the hook immediately, then start TTS so first audio isn't
-      // blocked on the extension noticing the WS event and POSTing /tts/speak.
+      // Reply to the hook immediately, then queue TTS behind any thought speaks.
       json(res, 200, { ok: true, spokenText: event.spokenText, autoSpeak: shouldAutoSpeak });
       if (shouldAutoSpeak && event.spokenText.trim()) {
         void speakAndAnnounce(event.spokenText, "after-agent-response");
-      } else {
+      } else if (!speechBusy && speakQueue.length === 0) {
         setState("idle", "agent response received");
       }
       return;
@@ -370,7 +473,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/tts/speak") {
-      if (speechBusy) {
+      if (speechBusy || speakQueue.length > 0) {
         json(res, 409, { ok: false, error: "speech pipeline busy" });
         return;
       }
@@ -393,6 +496,7 @@ const server = http.createServer(async (req, res) => {
           voice: result.voice,
           firstAudioMs: result.firstAudioMs,
           totalMs: result.totalMs,
+          source: "tts/speak",
           at: new Date().toISOString(),
         });
         setState("idle", "spoke");
@@ -403,12 +507,14 @@ const server = http.createServer(async (req, res) => {
           type: "tts_done",
           ok: false,
           error: message,
+          source: "tts/speak",
           at: new Date().toISOString(),
         });
         setState("error", message);
         throw error;
       } finally {
         speechBusy = false;
+        if (speakQueue.length) void drainSpeakQueue();
       }
       return;
     }
