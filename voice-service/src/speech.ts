@@ -20,14 +20,57 @@ export function resolveRepoScript(name: string): string | undefined {
   return undefined;
 }
 
+export function loadDotEnv(): void {
+  const candidates = [
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(__dirname, "..", "..", ".env"),
+  ];
+  for (const file of candidates) {
+    if (!fs.existsSync(file)) continue;
+    const text = fs.readFileSync(file, "utf8");
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq <= 0) continue;
+      const key = line.slice(0, eq).trim();
+      let value = line.slice(eq + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      if (!process.env[key]) process.env[key] = value;
+    }
+    break;
+  }
+}
+
+function openaiKey(): string | undefined {
+  return (
+    process.env.VOICE_CURSOR_OPENAI_API_KEY ||
+    process.env.OPENAI_API_KEY ||
+    undefined
+  );
+}
+
 export function describeSttConfig(): {
   engine: string;
   resolved: string;
+  hasOpenAI: boolean;
 } {
-  return {
-    engine: "windows",
-    resolved: process.platform === "win32" ? "windows-system-speech" : "unsupported",
-  };
+  const preferred = (process.env.VOICE_CURSOR_STT ?? "auto").toLowerCase();
+  const hasOpenAI = Boolean(openaiKey());
+  let resolved = "windows-system-speech";
+  if (preferred === "openai" || preferred === "whisper-openai") {
+    resolved = hasOpenAI ? "whisper-openai" : "openai-missing-key";
+  } else if (preferred === "auto" && hasOpenAI) {
+    resolved = "whisper-openai";
+  } else if (preferred === "windows") {
+    resolved = "windows-system-speech";
+  }
+  return { engine: preferred, resolved, hasOpenAI };
 }
 
 export function describeTtsConfig(): {
@@ -190,44 +233,92 @@ export async function startMicSession(options?: {
   return { id, startedAt };
 }
 
-async function transcribeWav(wavPath: string): Promise<string> {
+async function transcribeWavOpenAI(wavPath: string): Promise<string> {
+  const key = openaiKey();
+  if (!key) throw new Error("OPENAI_API_KEY not set");
+
+  const model = process.env.VOICE_CURSOR_WHISPER_MODEL || "whisper-1";
+  const bytes = fs.readFileSync(wavPath);
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(bytes)], { type: "audio/wav" }), "audio.wav");
+  form.append("model", model);
+  form.append("response_format", "json");
+
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}` },
+    body: form,
+  });
+  const raw = await res.text();
+  if (!res.ok) {
+    throw new Error(`OpenAI Whisper HTTP ${res.status}: ${raw.slice(0, 400)}`);
+  }
+  const parsed = JSON.parse(raw) as { text?: string };
+  return (parsed.text ?? "").trim();
+}
+
+async function transcribeWavWindows(wavPath: string): Promise<string> {
   const script = resolveRepoScript("stt-wav-windows.ps1");
   if (!script) throw new Error("scripts/stt-wav-windows.ps1 not found");
+  const { stdout, stderr } = await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-WavFile",
+      wavPath,
+      "-TimeoutSeconds",
+      "20",
+    ],
+    {
+      windowsHide: true,
+      timeout: 25_000,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  const lines = String(stdout ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const textLine = [...lines].reverse().find((l) => !l.startsWith("meta ")) ?? "";
+  if (!textLine && stderr?.trim()) throw new Error(stderr.trim());
+  return textLine;
+}
+
+async function transcribeWav(wavPath: string): Promise<{ text: string; engine: string }> {
   const bytes = fs.existsSync(wavPath) ? fs.statSync(wavPath).size : 0;
   console.log(`[voice-cursor] transcribeWav start bytes=${bytes} path=${wavPath}`);
   const started = Date.now();
+  const cfg = describeSttConfig();
+
+  const tryOpenAI = cfg.resolved === "whisper-openai" || cfg.hasOpenAI;
+
+  if (tryOpenAI && openaiKey()) {
+    try {
+      const text = await transcribeWavOpenAI(wavPath);
+      console.log(
+        `[voice-cursor] transcribeWav openai done ms=${Date.now() - started} text=${text || "(empty)"}`,
+      );
+      return { text, engine: "whisper-openai" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[voice-cursor] OpenAI Whisper failed: ${message}`);
+      if ((process.env.VOICE_CURSOR_STT ?? "auto").toLowerCase().includes("openai")) {
+        throw new Error(`OpenAI Whisper failed: ${message}`);
+      }
+      console.warn("[voice-cursor] falling back to Windows STT");
+    }
+  }
+
   try {
-    const { stdout, stderr } = await execFileAsync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        script,
-        "-WavFile",
-        wavPath,
-        "-TimeoutSeconds",
-        "20",
-      ],
-      {
-        windowsHide: true,
-        timeout: 25_000,
-        maxBuffer: 1024 * 1024,
-      },
-    );
-    const lines = String(stdout ?? "")
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-    // Last non-meta line is the transcript.
-    const textLine =
-      [...lines].reverse().find((l) => !l.startsWith("meta ")) ?? "";
-    if (!textLine && stderr?.trim()) throw new Error(stderr.trim());
+    const text = await transcribeWavWindows(wavPath);
     console.log(
-      `[voice-cursor] transcribeWav done ms=${Date.now() - started} text=${textLine || "(empty)"}`,
+      `[voice-cursor] transcribeWav windows done ms=${Date.now() - started} text=${text || "(empty)"}`,
     );
-    return textLine;
+    return { text, engine: "windows-system-speech-wav" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[voice-cursor] transcribeWav failed ms=${Date.now() - started}: ${message}`);
@@ -297,10 +388,10 @@ export async function stopMicSessionAndTranscribe(): Promise<{
   }
 
   try {
-    const text = await transcribeWav(session.wavPath);
+    const result = await transcribeWav(session.wavPath);
     return {
-      text,
-      engine: "windows-system-speech-wav",
+      text: result.text,
+      engine: result.engine,
       id: session.id,
       durationMs: Date.now() - started,
     };

@@ -18,11 +18,14 @@ import {
   stopMicSessionAndTranscribe,
   cancelMicSession,
   getMicSessionStatus,
+  loadDotEnv,
 } from "./speech";
+
+loadDotEnv();
 
 const PORT = Number(process.env.VOICE_CURSOR_PORT ?? 4738);
 const HOST = process.env.VOICE_CURSOR_HOST ?? "127.0.0.1";
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 
 let state: VoiceCursorState = "idle";
 const events: VoiceCursorEvent[] = [];
@@ -355,7 +358,9 @@ server.listen(PORT, HOST, () => {
   const tts = describeTtsConfig();
   console.log(`[voice-cursor] listening on http://${HOST}:${PORT}`);
   console.log(`[voice-cursor] websocket ws://${HOST}:${PORT}/ws`);
-  console.log(`[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved}`);
+  console.log(
+    `[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved} openai=${stt.hasOpenAI}`,
+  );
   console.log(`[voice-cursor] TTS engine=${tts.engine} voice=${tts.voice}`);
   void warmTts();
 });
