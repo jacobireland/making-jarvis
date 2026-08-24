@@ -130,7 +130,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "watch": "tsc -w -p tsconfig.json"
+    "watch": "tsc -w -p tsconfig.json",
+    "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@voice-cursor/shared": "0.1.0",

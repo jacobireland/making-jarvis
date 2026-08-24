@@ -12,6 +12,7 @@ import {
   ensureVoiceService,
   stopManagedVoiceService,
 } from "./serviceProcess";
+import { stampOutputChannel } from "./log";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
@@ -33,7 +34,7 @@ let listenArmed = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionPath = context.extensionPath;
-  output = vscode.window.createOutputChannel(OUTPUT_CHANNEL);
+  output = stampOutputChannel(vscode.window.createOutputChannel(OUTPUT_CHANNEL));
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.text = "$(unmute) Voice Cursor: idle";
   status.tooltip = "Click to turn listening on";

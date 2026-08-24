@@ -13,7 +13,7 @@
     "build:shared": "npm run build -w shared",
     "build:service": "npm run build -w voice-service",
     "build:extension": "npm run build -w extension",
-    "test": "npm run test -w shared && npm run test -w voice-service",
+    "test": "npm run test -w shared && npm run test -w voice-service && npm run test -w voice-cursor",
     "service": "npm run start -w voice-service",
     "service:dev": "npm run dev -w voice-service"
   },
