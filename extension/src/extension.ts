@@ -7,6 +7,7 @@ import { diagnoseCapture } from "./diagnose";
 import { waitForCapturedMarker } from "./proveSubmit";
 import { notifyAgentResponse, notifyTtsDone } from "./agentWait";
 import { runOneShotTalk, startPushToTalk, stopPushToTalkAndSend } from "./oneShot";
+import { showStickyListeningUi, signalListenEnd } from "./listenUi";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
 const DEFAULT_TEST_PROMPT = "SPIKE: reply with exactly PONG and nothing else.";
@@ -18,6 +19,8 @@ let lastAgentResponse: AgentResponseEvent | undefined;
 let reconnectTimer: NodeJS.Timeout | undefined;
 let extensionPath = "";
 let oneShotRunning = false;
+/** When true, Stop status-bar click only ends the sticky UI; caller runs send. */
+let deferStopToCaller = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionPath = context.extensionPath;
@@ -201,29 +204,50 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.oneShotTalk", async () => {
       if (oneShotRunning) {
-        vscode.window.showWarningMessage("Voice Cursor: already busy");
-        return;
+        const pick = await vscode.window.showWarningMessage(
+          "Voice Cursor is still finishing the previous turn.",
+          "Cancel & Start Fresh",
+          "Keep Waiting",
+        );
+        if (pick !== "Cancel & Start Fresh") return;
+        try {
+          await postJson("/stt/cancel", {});
+        } catch {
+          // ignore
+        }
+        signalListenEnd("cancel");
+        oneShotRunning = false;
+        deferStopToCaller = false;
       }
       oneShotRunning = true;
       output.show(true);
       try {
-        const listenSeconds = vscode.workspace
-          .getConfiguration("voiceCursor")
-          .get<number>("listenSeconds", 7);
         const newChat = vscode.workspace
           .getConfiguration("voiceCursor")
           .get<boolean>("oneShotNewChat", true);
         await runOneShotTalk({
           serviceBase: serviceBase(),
           extensionPath,
-          listenSeconds,
+          listenSeconds: vscode.workspace
+            .getConfiguration("voiceCursor")
+            .get<number>("listenSeconds", 7),
           newChat,
           submitCandidates: getSubmitCandidates(),
           log: (msg) => output.appendLine(msg),
           setStatus,
+          onListening: () => {
+            deferStopToCaller = true;
+            status.command = "voiceCursor.stopListeningAndSend";
+            status.tooltip = "Click to stop listening and send";
+            status.text = "$(mic) Voice Cursor: listening (click to send)";
+          },
         });
       } finally {
+        deferStopToCaller = false;
         oneShotRunning = false;
+        status.command = "voiceCursor.startListening";
+        status.tooltip = "Voice Cursor: Start Listening";
+        status.text = "$(unmute) Voice Cursor: idle";
       }
     }),
   );
@@ -242,7 +266,9 @@ export function activate(context: vscode.ExtensionContext): void {
         } catch {
           // ignore
         }
+        signalListenEnd("cancel");
         oneShotRunning = false;
+        deferStopToCaller = false;
       }
       output.show(true);
       const ok = await startPushToTalk({
@@ -250,16 +276,44 @@ export function activate(context: vscode.ExtensionContext): void {
         log: (msg) => output.appendLine(msg),
         setStatus,
       });
-      if (ok) {
-        status.command = "voiceCursor.stopListeningAndSend";
-        status.tooltip = "Click to stop listening and send";
-        status.text = "$(mic) Voice Cursor: listening (click to send)";
-      }
+      if (!ok) return;
+
+      status.command = "voiceCursor.stopListeningAndSend";
+      status.tooltip = "Click to stop listening and send";
+      status.text = "$(mic) Voice Cursor: listening (click to send)";
+
+      // Sticky progress — does not vanish like a toast.
+      void showStickyListeningUi({
+        onCancel: async () => {
+          try {
+            await postJson("/stt/cancel", {});
+          } catch {
+            // ignore
+          }
+          setStatus("idle", "cancelled");
+          status.command = "voiceCursor.startListening";
+          status.tooltip = "Voice Cursor: Start Listening";
+          status.text = "$(unmute) Voice Cursor: idle";
+        },
+      }).then((action) => {
+        if (action === "send") {
+          // stopListeningAndSend is already running from the status-bar click
+          return;
+        }
+      });
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("voiceCursor.stopListeningAndSend", async () => {
+      // Always dismiss sticky listening UI first.
+      signalListenEnd("send");
+
+      if (deferStopToCaller) {
+        // One-Shot owns the send path after the sticky UI resolves.
+        return;
+      }
+
       if (oneShotRunning) {
         vscode.window.showWarningMessage(
           "Voice Cursor: already sending this turn. Use Cancel Listening to abort.",
@@ -288,6 +342,7 @@ export function activate(context: vscode.ExtensionContext): void {
         oneShotRunning = false;
         status.command = "voiceCursor.startListening";
         status.tooltip = "Voice Cursor: Start Listening";
+        status.text = "$(unmute) Voice Cursor: idle";
       }
     }),
   );
@@ -299,10 +354,13 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch {
         // ignore
       }
+      signalListenEnd("cancel");
+      deferStopToCaller = false;
       oneShotRunning = false;
       setStatus("idle", "cancelled");
       status.command = "voiceCursor.startListening";
       status.tooltip = "Voice Cursor: Start Listening";
+      status.text = "$(unmute) Voice Cursor: idle";
       vscode.window.showInformationMessage("Voice Cursor: listening cancelled");
     }),
   );

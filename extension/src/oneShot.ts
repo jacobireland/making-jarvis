@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { injectPrompt } from "./inject";
 import { waitForAgentResponseFast, waitForTtsDoneFast } from "./agentWait";
+import { showStickyListeningUi } from "./listenUi";
 
 export async function startPushToTalk(options: {
   serviceBase: string;
@@ -21,9 +22,7 @@ export async function startPushToTalk(options: {
       throw new Error(body.error ?? `STT start HTTP ${res.status}`);
     }
     options.log(`[ptt] listening id=${body.id}`);
-    vscode.window.showInformationMessage(
-      "Voice Cursor: listening… run “Stop Listening & Send” when done.",
-    );
+    // Do not use a vanishing toast for Stop — status bar + sticky progress own that.
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -209,7 +208,7 @@ export async function stopPushToTalkAndSend(options: {
   vscode.window.showInformationMessage("Voice Cursor: done.");
 }
 
-/** @deprecated kept for compatibility — prefer start/stop push-to-talk */
+/** One-shot = start listen, sticky UI until status-bar Stop & Send (or Cancel). */
 export async function runOneShotTalk(options: {
   serviceBase: string;
   extensionPath: string;
@@ -218,6 +217,8 @@ export async function runOneShotTalk(options: {
   submitCandidates: string[];
   log: (message: string) => void;
   setStatus: (state: string, detail?: string) => void;
+  /** Called after mic starts so the extension can point the status bar at Stop. */
+  onListening?: () => void;
 }): Promise<void> {
   const started = await startPushToTalk({
     serviceBase: options.serviceBase,
@@ -226,18 +227,21 @@ export async function runOneShotTalk(options: {
   });
   if (!started) return;
 
-  const pick = await vscode.window.showInformationMessage(
-    "Listening… click Stop when finished speaking.",
-    "Stop Listening & Send",
-    "Cancel",
-  );
-  if (pick !== "Stop Listening & Send") {
-    await fetch(`${options.serviceBase.replace(/\/$/, "")}/stt/cancel`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    }).catch(() => undefined);
+  options.onListening?.();
+
+  const action = await showStickyListeningUi({
+    onCancel: async () => {
+      await fetch(`${options.serviceBase.replace(/\/$/, "")}/stt/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }).catch(() => undefined);
+    },
+  });
+
+  if (action !== "send") {
     options.setStatus("idle", "cancelled");
+    options.log("[ptt] listening cancelled from sticky UI");
     return;
   }
 
