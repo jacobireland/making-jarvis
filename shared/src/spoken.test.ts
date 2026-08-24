@@ -14,6 +14,27 @@ test("strips code fences", () => {
   assert.doesNotMatch(spoken, /export const/);
 });
 
+test("preserves paragraph boundaries as sentence pauses", () => {
+  const raw =
+    "Kind of, but not in the friendship way.\n\nYard bees are not studying cheekbones.";
+  const spoken = toSpokenText(raw);
+  assert.match(spoken, /way\.\s+Yard bees/i);
+});
+
+test("turns label-style line lists into separate spoken sentences", () => {
+  const raw = `What they do learn is the stuff that actually matters to them:
+
+Scent — soap, laundry detergent, sweat, the garden itself
+How she moves — slow and calm vs. flailing
+Colors and shapes — hats, shirts, hair`;
+  const spoken = toSpokenText(raw);
+  assert.match(spoken, /matters to them\./i);
+  assert.match(spoken, /garden itself\.\s+How she moves/i);
+  assert.match(spoken, /flailing\.\s+Colors and shapes/i);
+  assert.doesNotMatch(spoken, /itself How she moves/i);
+});
+
+
 test("caps long responses", () => {
   const raw = "Word ".repeat(200);
   const spoken = toSpokenText(raw, { maxChars: 120 });

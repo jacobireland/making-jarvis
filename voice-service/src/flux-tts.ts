@@ -277,6 +277,7 @@ export class FluxTtsSession {
    * Synthesize one agent turn. Audio callbacks fire as PCM arrives (before turn ends).
    */
   async speakTurn(text: string, onAudio: FluxAudioHandler): Promise<FluxSpeakTurnResult> {
+    // Preserve punctuation boundaries from toSpokenText; only collapse raw whitespace.
     const cleaned = text.replace(/\s+/g, " ").trim();
     if (!cleaned) {
       return { audioBytes: 0 };
