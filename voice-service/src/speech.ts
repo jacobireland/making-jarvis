@@ -51,23 +51,56 @@ export function loadDotEnv(): void {
       }
       if (!process.env[key]) process.env[key] = value;
     }
+    console.log(`[voice-cursor] loaded env from ${file}`);
     break;
   }
 }
 
 function openaiKey(): string | undefined {
-  return (
-    process.env.VOICE_CURSOR_OPENAI_API_KEY ||
-    process.env.OPENAI_API_KEY ||
-    undefined
+  return sanitizeSecret(
+    process.env.VOICE_CURSOR_OPENAI_API_KEY || process.env.OPENAI_API_KEY,
   );
 }
 
 function deepgramKey(): string | undefined {
-  return (
-    process.env.VOICE_CURSOR_DEEPGRAM_API_KEY ||
-    process.env.DEEPGRAM_API_KEY ||
-    undefined
+  const raw = sanitizeSecret(
+    process.env.VOICE_CURSOR_DEEPGRAM_API_KEY || process.env.DEEPGRAM_API_KEY,
+  );
+  if (!raw) return undefined;
+  // Users sometimes paste "Token xyz" from docs.
+  const cleaned = raw.replace(/^(Token|Bearer)\s+/i, "").trim();
+  if (!cleaned) return undefined;
+  // Placeholder values from .env.example
+  if (
+    cleaned === "..." ||
+    /^your[-_]?key/i.test(cleaned) ||
+    cleaned.includes("sk-...") ||
+    cleaned.length < 16
+  ) {
+    console.warn(
+      `[voice-cursor] DEEPGRAM_API_KEY looks like a placeholder (len=${cleaned.length}) — create a real key at https://console.deepgram.com/`,
+    );
+    return undefined;
+  }
+  return cleaned;
+}
+
+function sanitizeSecret(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function describeSecret(value: string | undefined): string {
+  if (!value) return "missing";
+  if (value.length < 8) return `len=${value.length}`;
+  return `len=${value.length} tail=…${value.slice(-4)}`;
+}
+
+/** Safe startup hint — never prints the full API key. */
+export function logAuthHints(): void {
+  console.log(
+    `[voice-cursor] auth deepgram=${describeSecret(deepgramKey())} openai=${describeSecret(openaiKey())}`,
   );
 }
 

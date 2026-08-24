@@ -19,6 +19,7 @@ import {
   cancelMicSession,
   getMicSessionStatus,
   loadDotEnv,
+  logAuthHints,
 } from "./speech";
 
 loadDotEnv();
@@ -433,5 +434,6 @@ server.listen(PORT, HOST, () => {
   console.log(
     `[voice-cursor] TTS engine=${tts.engine} resolved=${tts.resolved} voice=${tts.voice} rate=${tts.rate} deepgram=${tts.hasDeepgram}`,
   );
+  logAuthHints();
   void warmTts();
 });
