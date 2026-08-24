@@ -7,7 +7,7 @@ Voice interface to the **existing Cursor Agent**. Cursor remains responsible for
 | Piece | Role |
 |---|---|
 | `extension/` | One-Shot Talk, inject/auto-submit, capture display |
-| `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Windows STT + Edge TTS |
+| `voice-service/` | Local HTTP/WS on `127.0.0.1:4738` + Deepgram/Whisper STT + Deepgram/Edge TTS |
 | `.cursor/hooks/` | `afterAgentResponse` → service |
 | `scripts/` | Windows Enter / STT / TTS helpers |
 | `shared/` | Event types + `toSpokenText()` |
@@ -27,7 +27,7 @@ In Cursor (open the repo folder that contains `.cursor/hooks.json`):
 3. Speak, then **Voice Cursor: Stop Listening & Send**
 4. Confirm transcript if prompted, wait for spoken reply
 
-Details: [docs/phase2-oneshot.md](docs/phase2-oneshot.md) · Phase 1 checklist: [docs/spike-phase1.md](docs/spike-phase1.md)
+Details: [docs/phase2-oneshot.md](docs/phase2-oneshot.md) · Deepgram: [docs/deepgram-setup.md](docs/deepgram-setup.md) · Phase 1: [docs/spike-phase1.md](docs/spike-phase1.md)
 
 ## Design constraints
 

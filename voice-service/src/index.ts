@@ -428,10 +428,10 @@ server.listen(PORT, HOST, () => {
   console.log(`[voice-cursor] listening on http://${HOST}:${PORT}`);
   console.log(`[voice-cursor] websocket ws://${HOST}:${PORT}/ws`);
   console.log(
-    `[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved} openai=${stt.hasOpenAI}`,
+    `[voice-cursor] STT engine=${stt.engine} resolved=${stt.resolved} deepgram=${stt.hasDeepgram} openai=${stt.hasOpenAI}`,
   );
   console.log(
-    `[voice-cursor] TTS engine=${tts.engine} voice=${tts.voice} rate=${tts.rate}`,
+    `[voice-cursor] TTS engine=${tts.engine} resolved=${tts.resolved} voice=${tts.voice} rate=${tts.rate} deepgram=${tts.hasDeepgram}`,
   );
   void warmTts();
 });

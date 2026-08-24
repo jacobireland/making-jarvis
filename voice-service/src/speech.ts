@@ -10,6 +10,9 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_EDGE_VOICE = "en-PH-JamesNeural";
 /** Default ~25% faster than Edge's natural rate — snappier agent replies. */
 const DEFAULT_EDGE_RATE = 1.25;
+const DEFAULT_DEEPGRAM_STT_MODEL = "nova-3";
+/** Clear male Aura-2 voice; override with VOICE_CURSOR_TTS_VOICE. */
+const DEFAULT_DEEPGRAM_TTS_MODEL = "aura-2-odysseus-en";
 
 export function resolveRepoScript(name: string): string | undefined {
   const candidates = [
@@ -57,22 +60,37 @@ function openaiKey(): string | undefined {
   );
 }
 
+function deepgramKey(): string | undefined {
+  return (
+    process.env.VOICE_CURSOR_DEEPGRAM_API_KEY ||
+    process.env.DEEPGRAM_API_KEY ||
+    undefined
+  );
+}
+
 export function describeSttConfig(): {
   engine: string;
   resolved: string;
   hasOpenAI: boolean;
+  hasDeepgram: boolean;
 } {
   const preferred = (process.env.VOICE_CURSOR_STT ?? "auto").toLowerCase();
   const hasOpenAI = Boolean(openaiKey());
+  const hasDeepgram = Boolean(deepgramKey());
   let resolved = "windows-system-speech";
-  if (preferred === "openai" || preferred === "whisper-openai") {
+
+  if (preferred === "deepgram") {
+    resolved = hasDeepgram ? "deepgram" : "deepgram-missing-key";
+  } else if (preferred === "openai" || preferred === "whisper-openai") {
     resolved = hasOpenAI ? "whisper-openai" : "openai-missing-key";
-  } else if (preferred === "auto" && hasOpenAI) {
-    resolved = "whisper-openai";
   } else if (preferred === "windows") {
     resolved = "windows-system-speech";
+  } else if (preferred === "auto") {
+    if (hasDeepgram) resolved = "deepgram";
+    else if (hasOpenAI) resolved = "whisper-openai";
   }
-  return { engine: preferred, resolved, hasOpenAI };
+
+  return { engine: preferred, resolved, hasOpenAI, hasDeepgram };
 }
 
 function resolveTtsRate(): number | string {
@@ -86,14 +104,74 @@ function resolveTtsRate(): number | string {
   return Math.min(2, Math.max(0.5, n));
 }
 
+function resolveDeepgramTtsModel(): string {
+  const raw =
+    process.env.VOICE_CURSOR_DEEPGRAM_TTS_MODEL ||
+    process.env.VOICE_CURSOR_TTS_VOICE ||
+    DEFAULT_DEEPGRAM_TTS_MODEL;
+  // Ignore leftover Edge neural voice names if switching to Deepgram.
+  if (/neural/i.test(raw) || !raw.toLowerCase().startsWith("aura")) {
+    return DEFAULT_DEEPGRAM_TTS_MODEL;
+  }
+  return raw;
+}
+
+function resolveDeepgramTtsSpeed(): number {
+  const rate = resolveTtsRate();
+  if (typeof rate === "number") return rate;
+  const map: Record<string, number> = {
+    "x-slow": 0.7,
+    slow: 0.85,
+    medium: 1,
+    default: 1,
+    fast: 1.25,
+    "x-fast": 1.45,
+  };
+  if (typeof rate === "string" && rate in map) return map[rate];
+  if (typeof rate === "string" && rate.endsWith("%")) {
+    const pct = Number(rate.replace("%", ""));
+    if (Number.isFinite(pct)) return Math.min(2, Math.max(0.5, 1 + pct / 100));
+  }
+  return DEFAULT_EDGE_RATE;
+}
+
 export function describeTtsConfig(): {
   engine: string;
+  resolved: string;
   voice: string;
   rate: number | string;
+  hasDeepgram: boolean;
 } {
-  const engine = (process.env.VOICE_CURSOR_TTS ?? "edge").toLowerCase();
-  const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
-  return { engine, voice, rate: resolveTtsRate() };
+  const preferred = (process.env.VOICE_CURSOR_TTS ?? "auto").toLowerCase();
+  const hasDeepgram = Boolean(deepgramKey());
+  let resolved = "edge";
+  if (preferred === "deepgram") {
+    resolved = hasDeepgram ? "deepgram" : "deepgram-missing-key";
+  } else if (preferred === "windows") {
+    resolved = "windows";
+  } else if (preferred === "edge") {
+    resolved = "edge";
+  } else if (preferred === "auto") {
+    resolved = hasDeepgram ? "deepgram" : "edge";
+  }
+
+  const voice =
+    process.env.VOICE_CURSOR_DEEPGRAM_TTS_MODEL ||
+    (resolved === "deepgram"
+      ? resolveDeepgramTtsModel()
+      : (process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE));
+
+  // When resolved to deepgram, always surface the Aura model (not an Edge leftover).
+  const displayVoice =
+    resolved === "deepgram" ? resolveDeepgramTtsModel() : voice;
+
+  return {
+    engine: preferred,
+    resolved,
+    voice: displayVoice,
+    rate: resolveTtsRate(),
+    hasDeepgram,
+  };
 }
 
 function escapeXml(text: string): string {
@@ -351,6 +429,40 @@ async function transcribeWavOpenAI(wavPath: string): Promise<string> {
   return (parsed.text ?? "").trim();
 }
 
+async function transcribeWavDeepgram(wavPath: string): Promise<string> {
+  const key = deepgramKey();
+  if (!key) throw new Error("DEEPGRAM_API_KEY not set");
+
+  const model = process.env.VOICE_CURSOR_DEEPGRAM_STT_MODEL || DEFAULT_DEEPGRAM_STT_MODEL;
+  const bytes = fs.readFileSync(wavPath);
+  const params = new URLSearchParams({
+    model,
+    smart_format: "true",
+    punctuate: "true",
+  });
+
+  const res = await fetch(`https://api.deepgram.com/v1/listen?${params}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Token ${key}`,
+      "Content-Type": "audio/wav",
+    },
+    body: bytes,
+  });
+  const raw = await res.text();
+  if (!res.ok) {
+    throw new Error(`Deepgram STT HTTP ${res.status}: ${raw.slice(0, 400)}`);
+  }
+  const parsed = JSON.parse(raw) as {
+    results?: {
+      channels?: Array<{ alternatives?: Array<{ transcript?: string }> }>;
+    };
+  };
+  const text =
+    parsed.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ?? "";
+  return text;
+}
+
 async function transcribeWavWindows(wavPath: string): Promise<string> {
   const script = resolveRepoScript("stt-wav-windows.ps1");
   if (!script) throw new Error("scripts/stt-wav-windows.ps1 not found");
@@ -387,10 +499,33 @@ async function transcribeWav(wavPath: string): Promise<{ text: string; engine: s
   console.log(`[voice-cursor] transcribeWav start bytes=${bytes} path=${wavPath}`);
   const started = Date.now();
   const cfg = describeSttConfig();
+  const preferred = (process.env.VOICE_CURSOR_STT ?? "auto").toLowerCase();
 
-  const tryOpenAI = cfg.resolved === "whisper-openai" || cfg.hasOpenAI;
+  const tryDeepgram =
+    cfg.resolved === "deepgram" || (preferred === "auto" && cfg.hasDeepgram);
+  const tryOpenAI =
+    cfg.resolved === "whisper-openai" ||
+    (preferred === "auto" && cfg.hasOpenAI && !tryDeepgram) ||
+    preferred.includes("openai");
 
-  if (tryOpenAI && openaiKey()) {
+  if (tryDeepgram && deepgramKey()) {
+    try {
+      const text = await transcribeWavDeepgram(wavPath);
+      console.log(
+        `[voice-cursor] transcribeWav deepgram done ms=${Date.now() - started} text=${text || "(empty)"}`,
+      );
+      return { text, engine: "deepgram" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[voice-cursor] Deepgram STT failed: ${message}`);
+      if (preferred === "deepgram") {
+        throw new Error(`Deepgram STT failed: ${message}`);
+      }
+      console.warn("[voice-cursor] falling back from Deepgram STT");
+    }
+  }
+
+  if ((tryOpenAI || (preferred === "auto" && cfg.hasOpenAI)) && openaiKey()) {
     try {
       const text = await transcribeWavOpenAI(wavPath);
       console.log(
@@ -400,7 +535,7 @@ async function transcribeWav(wavPath: string): Promise<{ text: string; engine: s
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[voice-cursor] OpenAI Whisper failed: ${message}`);
-      if ((process.env.VOICE_CURSOR_STT ?? "auto").toLowerCase().includes("openai")) {
+      if (preferred.includes("openai")) {
         throw new Error(`OpenAI Whisper failed: ${message}`);
       }
       console.warn("[voice-cursor] falling back to Windows STT");
@@ -719,39 +854,144 @@ async function getEdgeClient(voice: string): Promise<MsEdgeTTS> {
 
 /** Optional warm-up so the first spoken reply is faster. */
 export async function warmTts(): Promise<void> {
-  const preferred = (process.env.VOICE_CURSOR_TTS ?? "edge").toLowerCase();
-  if (preferred === "windows") return;
-  const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
+  const cfg = describeTtsConfig();
+  if (cfg.resolved === "windows") return;
   try {
-    const tts = await getEdgeClient(voice);
-    const prosody = new ProsodyOptions();
-    prosody.rate = resolveTtsRate();
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-warm-"));
-    try {
-      // Prime the Edge synth websocket with a tiny utterance.
-      const { audioFilePath } = await tts.toFile(tmpDir, ".", prosody);
-      try {
-        fs.unlinkSync(audioFilePath);
-      } catch {
-        // ignore
-      }
-    } finally {
-      try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
-        // ignore
-      }
-    }
     if (process.platform === "win32") {
       await ensurePlayHost();
     }
-    console.log("[voice-cursor] TTS warm-up complete");
+    if (cfg.resolved === "deepgram" && deepgramKey()) {
+      // Tiny synth to warm TLS + auth to Deepgram Speak.
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-warm-"));
+      try {
+        await synthDeepgramChunk("Hi.", path.join(tmpDir, "warm.mp3"));
+      } finally {
+        try {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+    } else {
+      const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
+      const tts = await getEdgeClient(voice);
+      const prosody = new ProsodyOptions();
+      prosody.rate = resolveTtsRate();
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-warm-"));
+      try {
+        const { audioFilePath } = await tts.toFile(tmpDir, ".", prosody);
+        try {
+          fs.unlinkSync(audioFilePath);
+        } catch {
+          // ignore
+        }
+      } finally {
+        try {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+    console.log(`[voice-cursor] TTS warm-up complete resolved=${cfg.resolved}`);
   } catch (error) {
     console.warn(
       "[voice-cursor] TTS warm-up failed:",
       error instanceof Error ? error.message : error,
     );
   }
+}
+
+async function synthDeepgramChunk(text: string, outPath: string): Promise<string> {
+  const key = deepgramKey();
+  if (!key) throw new Error("DEEPGRAM_API_KEY not set");
+
+  const model = resolveDeepgramTtsModel();
+  const speed = resolveDeepgramTtsSpeed();
+  const params = new URLSearchParams({
+    model,
+    encoding: "mp3",
+    speed: String(speed),
+  });
+
+  const res = await fetch(`https://api.deepgram.com/v1/speak?${params}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Token ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!res.ok) {
+    const raw = await res.text();
+    throw new Error(`Deepgram TTS HTTP ${res.status}: ${raw.slice(0, 400)}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length < 500) {
+    throw new Error(`Deepgram TTS audio too small (${buf.length} bytes)`);
+  }
+  fs.writeFileSync(outPath, buf);
+  return outPath;
+}
+
+async function speakWithDeepgram(text: string): Promise<{
+  engine: string;
+  voice: string;
+  firstAudioMs?: number;
+  totalMs: number;
+}> {
+  const voice = resolveDeepgramTtsModel();
+  const speed = resolveDeepgramTtsSpeed();
+  const totalStarted = Date.now();
+  let firstAudioMs: number | undefined;
+  const chunks = chunkForTts(text);
+  console.log(
+    `[voice-cursor] deepgram-tts speak chunks=${chunks.length} chars=${text.length} voice=${voice} speed=${speed}`,
+  );
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-dg-tts-"));
+  try {
+    const synthChunk = async (chunk: string, index: number): Promise<string> => {
+      const synthStarted = Date.now();
+      const outPath = path.join(tmpDir, `chunk-${index}.mp3`);
+      await synthDeepgramChunk(chunk, outPath);
+      const bytes = fs.statSync(outPath).size;
+      console.log(
+        `[voice-cursor] deepgram-tts chunk=${index} bytes=${bytes} voice=${voice} speed=${speed} synthMs=${Date.now() - synthStarted}`,
+      );
+      return outPath;
+    };
+
+    let nextFile = chunks.length > 0 ? synthChunk(chunks[0], 0) : null;
+    for (let i = 0; i < chunks.length; i++) {
+      const audioFilePath = await nextFile!;
+      nextFile =
+        i + 1 < chunks.length ? synthChunk(chunks[i + 1], i + 1) : null;
+      if (firstAudioMs === undefined) {
+        firstAudioMs = Date.now() - totalStarted;
+        console.log(`[voice-cursor] deepgram-tts firstAudioMs=${firstAudioMs}`);
+      }
+      await playAudioFile(audioFilePath);
+      try {
+        fs.unlinkSync(audioFilePath);
+      } catch {
+        // ignore
+      }
+    }
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+
+  const totalMs = Date.now() - totalStarted;
+  console.log(
+    `[voice-cursor] deepgram-tts totalMs=${totalMs} firstAudioMs=${firstAudioMs ?? "n/a"}`,
+  );
+  return { engine: "deepgram-tts", voice, firstAudioMs, totalMs };
 }
 
 async function speakWithEdge(text: string): Promise<{
@@ -853,13 +1093,29 @@ export async function speakText(text: string): Promise<{
   const cleaned = text.trim();
   if (!cleaned) return { engine: "none", totalMs: 0 };
 
-  const preferred = (process.env.VOICE_CURSOR_TTS ?? "edge").toLowerCase();
+  const cfg = describeTtsConfig();
+  const preferred = cfg.engine;
 
-  if (preferred === "windows") {
+  if (preferred === "windows" || cfg.resolved === "windows") {
     if (process.platform !== "win32") {
       throw new Error("VOICE_CURSOR_TTS=windows is only supported on Windows");
     }
     return speakWithWindowsSapi(cleaned);
+  }
+
+  if (cfg.resolved === "deepgram" || preferred === "deepgram") {
+    if (!deepgramKey()) {
+      throw new Error("DEEPGRAM_API_KEY not set for Deepgram TTS");
+    }
+    try {
+      return await speakWithDeepgram(cleaned);
+    } catch (error) {
+      console.warn(
+        "[voice-cursor] Deepgram TTS failed, falling back to Edge:",
+        error instanceof Error ? error.message : error,
+      );
+      if (preferred === "deepgram") throw error;
+    }
   }
 
   try {
@@ -870,8 +1126,7 @@ export async function speakText(text: string): Promise<{
       error instanceof Error ? error.message : error,
     );
     if (process.platform === "win32") {
-      const result = await speakWithWindowsSapi(cleaned);
-      return result;
+      return speakWithWindowsSapi(cleaned);
     }
     throw error;
   }
