@@ -5,6 +5,7 @@ import { injectPrompt, type InjectionStrategy } from "./inject";
 import { inventoryAgentCommands, writeInventoryMarkdown } from "./inventory";
 import { diagnoseCapture } from "./diagnose";
 import { waitForCapturedMarker } from "./proveSubmit";
+import { notifyAgentResponse } from "./agentWait";
 import { runOneShotTalk, startPushToTalk, stopPushToTalkAndSend } from "./oneShot";
 
 const OUTPUT_CHANNEL = "Voice Cursor";
@@ -387,11 +388,15 @@ function connectSocket(): void {
 function handleEvent(event: VoiceCursorEvent): void {
   if (event.type === "agent_response") {
     lastAgentResponse = event;
+    notifyAgentResponse(event);
     setStatus("idle", "response captured");
     output.appendLine(`[agent_response] ${event.spokenText}`);
-    void vscode.window.showInformationMessage(
-      `Voice Cursor captured: ${event.spokenText.slice(0, 120)}`,
-    );
+    // Skip toast during push-to-talk — it adds noise while TTS is starting.
+    if (!oneShotRunning) {
+      void vscode.window.showInformationMessage(
+        `Voice Cursor captured: ${event.spokenText.slice(0, 120)}`,
+      );
+    }
     return;
   }
   if (event.type === "state") {

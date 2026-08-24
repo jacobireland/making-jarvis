@@ -107,18 +107,44 @@ function escapeXml(text: string): string {
 
 function chunkForTts(text: string, maxChars = 900): string[] {
   const cleaned = text.replace(/\s+/g, " ").trim();
-  if (cleaned.length <= maxChars) return [cleaned];
+  if (!cleaned) return [];
+
+  // Prefer sentence-sized chunks so the first audio can start sooner.
+  const sentences =
+    cleaned.match(/[^.!?…]+(?:[.!?…]["']?|$)/g)?.map((s) => s.trim()).filter(Boolean) ?? [
+      cleaned,
+    ];
 
   const chunks: string[] = [];
-  let remaining = cleaned;
-  while (remaining.length > maxChars) {
-    let cut = remaining.lastIndexOf(". ", maxChars);
-    if (cut < maxChars * 0.4) cut = remaining.lastIndexOf(" ", maxChars);
-    if (cut < maxChars * 0.4) cut = maxChars;
-    chunks.push(remaining.slice(0, cut + 1).trim());
-    remaining = remaining.slice(cut + 1).trim();
+  let buf = "";
+  const firstMax = Math.min(220, maxChars);
+
+  for (const sentence of sentences) {
+    const limit = chunks.length === 0 && !buf ? firstMax : maxChars;
+    if (!buf) {
+      if (sentence.length <= limit) {
+        buf = sentence;
+      } else {
+        // Hard-wrap a long sentence.
+        let remaining = sentence;
+        while (remaining.length > limit) {
+          let cut = remaining.lastIndexOf(" ", limit);
+          if (cut < limit * 0.4) cut = limit;
+          chunks.push(remaining.slice(0, cut).trim());
+          remaining = remaining.slice(cut).trim();
+        }
+        buf = remaining;
+      }
+      continue;
+    }
+    if (`${buf} ${sentence}`.length <= limit) {
+      buf = `${buf} ${sentence}`;
+    } else {
+      chunks.push(buf);
+      buf = sentence;
+    }
   }
-  if (remaining) chunks.push(remaining);
+  if (buf) chunks.push(buf);
   return chunks;
 }
 
@@ -522,10 +548,18 @@ async function playAudioFile(filePath: string): Promise<void> {
   }
 
   if (process.platform === "win32") {
-    const script = resolveRepoScript("play-audio-windows.ps1");
-    if (!script) throw new Error("scripts/play-audio-windows.ps1 not found");
     const playStarted = Date.now();
     try {
+      const detail = await playViaWarmHost(filePath);
+      console.log(
+        `[voice-cursor] playback ${detail} wallMs=${Date.now() - playStarted}`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // One-shot script fallback if the warm host dies.
+      console.warn(`[voice-cursor] warm play host failed, fallback script: ${message}`);
+      const script = resolveRepoScript("play-audio-windows.ps1");
+      if (!script) throw new Error(`Audio playback failed: ${message}`);
       const { stdout, stderr } = await execFileAsync(
         "powershell.exe",
         [
@@ -545,14 +579,11 @@ async function playAudioFile(filePath: string): Promise<void> {
       );
       const detail = `${stdout} ${stderr}`.trim();
       if (!/ok /i.test(detail)) {
-        throw new Error(`Playback did not confirm success: ${detail || "(empty output)"}`);
+        throw new Error(`Audio playback failed: ${detail || message}`);
       }
       console.log(
         `[voice-cursor] playback ${detail} wallMs=${Date.now() - playStarted}`,
       );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Audio playback failed: ${message}`);
     }
     return;
   }
@@ -569,6 +600,106 @@ async function playAudioFile(filePath: string): Promise<void> {
   } catch {
     throw new Error("Could not play audio (install ffplay or use Windows/macOS)");
   }
+}
+
+type PlayHost = {
+  child: ReturnType<typeof import("node:child_process").spawn>;
+  ready: Promise<void>;
+  queue: Array<{
+    settle: (value: string) => void;
+    fail: (error: Error) => void;
+  }>;
+  buffer: string;
+};
+
+let playHost: PlayHost | null = null;
+
+async function ensurePlayHost(): Promise<PlayHost> {
+  if (playHost && playHost.child.exitCode === null) return playHost;
+
+  const script = resolveRepoScript("play-audio-host.ps1");
+  if (!script) throw new Error("scripts/play-audio-host.ps1 not found");
+
+  const { spawn } = await import("node:child_process");
+  const child = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+    {
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+
+  const host: PlayHost = {
+    child,
+    ready: Promise.resolve(),
+    queue: [],
+    buffer: "",
+  };
+
+  let readyResolve: () => void = () => undefined;
+  let readyReject: (error: Error) => void = () => undefined;
+  host.ready = new Promise<void>((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+
+  const onLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    if (trimmed === "ready") {
+      readyResolve();
+      return;
+    }
+    const pending = host.queue.shift();
+    if (!pending) return;
+    if (/^ok\b/i.test(trimmed)) pending.settle(trimmed);
+    else pending.fail(new Error(trimmed));
+  };
+
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    host.buffer += String(chunk);
+    let idx: number;
+    while ((idx = host.buffer.indexOf("\n")) >= 0) {
+      const line = host.buffer.slice(0, idx);
+      host.buffer = host.buffer.slice(idx + 1);
+      onLine(line.replace(/\r$/, ""));
+    }
+  });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    console.warn(`[voice-cursor] play-host stderr: ${String(chunk).trim()}`);
+  });
+  child.on("exit", (code) => {
+    console.warn(`[voice-cursor] play-host exited code=${code}`);
+    const err = new Error(`play-host exited (${code})`);
+    for (const pending of host.queue.splice(0)) pending.fail(err);
+    if (playHost === host) playHost = null;
+    readyReject(err);
+  });
+
+  // Ready timeout
+  const timeout = setTimeout(() => {
+    readyReject(new Error("play-host ready timeout"));
+  }, 8_000);
+  host.ready = host.ready.finally(() => clearTimeout(timeout));
+
+  playHost = host;
+  await host.ready;
+  console.log("[voice-cursor] play-host ready");
+  return host;
+}
+
+async function playViaWarmHost(filePath: string): Promise<string> {
+  const host = await ensurePlayHost();
+  return await new Promise<string>((resolve, reject) => {
+    host.queue.push({ settle: resolve, fail: reject });
+    try {
+      host.child.stdin?.write(`${filePath}\n`);
+    } catch (error) {
+      host.queue.pop();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
 }
 
 type EdgeClientCache = { voice: string; tts: MsEdgeTTS };
@@ -592,7 +723,29 @@ export async function warmTts(): Promise<void> {
   if (preferred === "windows") return;
   const voice = process.env.VOICE_CURSOR_TTS_VOICE ?? DEFAULT_EDGE_VOICE;
   try {
-    await getEdgeClient(voice);
+    const tts = await getEdgeClient(voice);
+    const prosody = new ProsodyOptions();
+    prosody.rate = resolveTtsRate();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-warm-"));
+    try {
+      // Prime the Edge synth websocket with a tiny utterance.
+      const { audioFilePath } = await tts.toFile(tmpDir, ".", prosody);
+      try {
+        fs.unlinkSync(audioFilePath);
+      } catch {
+        // ignore
+      }
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
+    if (process.platform === "win32") {
+      await ensurePlayHost();
+    }
+    console.log("[voice-cursor] TTS warm-up complete");
   } catch (error) {
     console.warn(
       "[voice-cursor] TTS warm-up failed:",
@@ -609,20 +762,33 @@ async function speakWithEdge(text: string): Promise<{ engine: string; voice: str
   const prosody = new ProsodyOptions();
   prosody.rate = rate;
 
+  const chunks = chunkForTts(text);
+  console.log(
+    `[voice-cursor] edge-tts speak chunks=${chunks.length} chars=${text.length} rate=${rate}`,
+  );
+
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-cursor-tts-"));
   try {
-    for (const chunk of chunkForTts(text)) {
+    const synthChunk = async (chunk: string, index: number): Promise<string> => {
       const synthStarted = Date.now();
-      // msedge-tts injects this string into SSML — escape XML specials.
       const { audioFilePath } = await tts.toFile(tmpDir, escapeXml(chunk), prosody);
-      const synthMs = Date.now() - synthStarted;
       if (!fs.existsSync(audioFilePath)) {
         throw new Error(`Edge TTS did not write audio file for voice=${voice}`);
       }
       const bytes = fs.statSync(audioFilePath).size;
       console.log(
-        `[voice-cursor] edge-tts wrote ${audioFilePath} (${bytes} bytes) voice=${voice} rate=${rate} synthMs=${synthMs}`,
+        `[voice-cursor] edge-tts chunk=${index} bytes=${bytes} voice=${voice} rate=${rate} synthMs=${Date.now() - synthStarted}`,
       );
+      return audioFilePath;
+    };
+
+    // Pipeline: synthesize N+1 while playing N so first audio starts ASAP
+    // and gaps between sentences stay small.
+    let nextFile = chunks.length > 0 ? synthChunk(chunks[0], 0) : null;
+    for (let i = 0; i < chunks.length; i++) {
+      const audioFilePath = await nextFile!;
+      nextFile =
+        i + 1 < chunks.length ? synthChunk(chunks[i + 1], i + 1) : null;
       await playAudioFile(audioFilePath);
       try {
         fs.unlinkSync(audioFilePath);

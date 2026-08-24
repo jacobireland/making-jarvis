@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { injectPrompt } from "./inject";
-import { waitForNextAgentResponse } from "./proveSubmit";
+import { waitForAgentResponseFast } from "./agentWait";
 
 export async function startPushToTalk(options: {
   serviceBase: string;
@@ -127,10 +127,12 @@ export async function stopPushToTalkAndSend(options: {
   }
 
   vscode.window.showInformationMessage("Sent to Agent. Waiting for reply…");
-  const captured = await waitForNextAgentResponse(base, {
+  const waitStarted = Date.now();
+  const captured = await waitForAgentResponseFast(base, {
     sinceIso,
     timeoutMs: 180_000,
   });
+  log(`[ptt] agent reply waitMs=${Date.now() - waitStarted}`);
 
   if (!captured.ok || !captured.spokenText) {
     setStatus("error", "no agent reply captured");
@@ -143,6 +145,7 @@ export async function stopPushToTalkAndSend(options: {
   log(`[ptt] captured spoken=${captured.spokenText}`);
   setStatus("speaking", captured.spokenText.slice(0, 60));
 
+  const ttsStarted = Date.now();
   try {
     const ttsRes = await fetch(`${base}/tts/speak`, {
       method: "POST",
@@ -153,7 +156,7 @@ export async function stopPushToTalkAndSend(options: {
     if (!ttsRes.ok || !ttsBody.ok) {
       throw new Error(ttsBody.error ?? `TTS HTTP ${ttsRes.status}`);
     }
-    log(`[ptt] tts engine=${ttsBody.engine}`);
+    log(`[ptt] tts engine=${ttsBody.engine} speakWallMs=${Date.now() - ttsStarted}`);
     setStatus("idle", "done");
     vscode.window.showInformationMessage("Voice Cursor: done.");
   } catch (error) {
